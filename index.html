@@ -4,6 +4,13 @@
 <title>דוחות מגרש</title>
 <meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <meta name="robots" content="noindex">
+<link rel="manifest" href="manifest.json">
+<link rel="apple-touch-icon" href="icon-180.png">
+<link rel="icon" href="icon-192.png">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-title" content="דוחות">
+<meta name="theme-color" content="#1f5f8b">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Assistant:wght@400;600;700&family=Rubik:wght@500;700;800&display=swap">
 <style>
@@ -55,6 +62,7 @@ h2 .count{font-family:var(--f-body);font-size:13px;color:var(--muted);font-weigh
 .card.s-r3,.card.s-r5{border-inline-start-color:var(--amber)}
 .card.s-paid{border-inline-start-color:var(--green)}
 .card.s-dispute,.card.s-ours{border-inline-start-color:var(--muted)}
+.card.s-review{border-inline-start-color:var(--accent)}
 .row{display:flex;align-items:center;gap:10px;flex-wrap:wrap}
 .between{justify-content:space-between}
 .plate{display:inline-flex;align-items:stretch;border:2px solid var(--plate-edge);border-radius:6px;overflow:hidden;background:var(--plate);color:var(--plate-ink);font-family:var(--f-display);font-weight:700;font-size:17px;letter-spacing:.04em;direction:ltr;font-variant-numeric:tabular-nums}
@@ -68,6 +76,7 @@ h2 .count{font-family:var(--f-body);font-size:13px;color:var(--muted);font-weigh
 .p-r3,.p-r5{background:var(--amber-bg);color:var(--amber)}
 .p-paid{background:var(--green-bg);color:var(--green)}
 .p-new,.p-wait,.p-dispute,.p-ours{background:var(--grey-bg);color:var(--muted)}
+.p-review{background:var(--accent);color:var(--accent-fg)}
 .sample{font-size:12px;font-weight:700;padding:2px 8px;border-radius:999px;background:var(--grey-bg);color:var(--muted)}
 .days{font-family:var(--f-display);font-weight:800;font-variant-numeric:tabular-nums}
 .note{font-size:14px;background:var(--surface-2);border-radius:8px;padding:8px 10px}
@@ -165,7 +174,9 @@ function fromRow(r){
     offenseDate:r.offense_at?r.offense_at.slice(0,10):"",offenseTime:r.offense_at?r.offense_at.slice(11,16):"",
     offensePlace:r.offense_place||"",noticeDate:r.notice_date||"",receivedDate:r.received_date||"",
     amount:r.amount,amountAfter:r.amount_after,dueDate:r.due_date||"",doubleDate:r.double_date||"",
-    payLink:r.pay_link||"",status:r.status,notes:r.notes||"",isSample:r.is_sample,createdAt:r.created_at,closedAt:r.closed_at,sent};
+    payLink:r.pay_link||"",status:r.status,notes:r.notes||"",isSample:r.is_sample,createdAt:r.created_at,closedAt:r.closed_at,sent,
+    source:r.source,reviewNeeded:r.review_needed,emailFrom:r.email_from||"",emailSubject:r.email_subject||"",
+    emailReceivedAt:r.email_received_at,fileUrl:r.file_url||"",extractRaw:r.extract_raw};
 }
 async function load(){
   const [d,i]=await Promise.all([sb.from("dealers").select("id,name,phone").order("name"),sb.from("issuers").select("*").order("id")]);
@@ -196,6 +207,7 @@ function dealerOf(t){return state.dealers[t.dealerId]||{name:t.dealer,phone:""}}
 
 // ---- stage logic: counted backwards from the double-fine date (fallback: due date)
 function stage(t){
+  if(t.reviewNeeded)return {k:"review",label:"מהמייל – לבדיקה",msg:null};
   if(t.status==="paid")return {k:"paid",label:"שולם",msg:null};
   if(t.status==="dispute")return {k:"dispute",label:"במחלוקת – מוקפא",msg:null};
   if(t.status==="ours")return {k:"ours",label:"לטיפול המגרש",msg:null};
@@ -208,7 +220,7 @@ function stage(t){
   if(d<=5)return {k:"r5",label:"תזכורת ראשונה",msg:sent.r5?null:"r5",d};
   return {k:sent.intake?"wait":"new",label:sent.intake?"ממתין":"נקלט – לשלוח הודעה",msg:sent.intake?null:"intake",d};
 }
-function needsAction(t){const s=stage(t);return s.msg||s.check||s.k==="red"||s.k==="late"}
+function needsAction(t){const s=stage(t);return !t.reviewNeeded&&(s.msg||s.check||s.k==="red"||s.k==="late")}
 
 // ---- WhatsApp messages. Opening line is only "שלום {dealer}," (decision 04/11/2026)
 function message(t,kind){
@@ -230,7 +242,23 @@ function message(t,kind){
 const MSG_NAME={intake:"הודעת קליטה",r5:"תזכורת 5 ימים",r3:"תזכורת 3 ימים",r1:"הודעה דחופה – יום לפני"};
 
 // ---- rendering
+function reviewCard(t){
+  const x=t.extractRaw||{};
+  const miss=[!t.plate&&"מספר רכב",!t.issuerId&&"גורם מוציא",!t.dueDate&&"מועד תשלום",!t.amount&&"סכום"].filter(Boolean);
+  return `<article class="card s-review" data-id="${esc(t.id)}">
+   <div class="row between">${t.plate?plateHTML(t.plate):`<b>מספר רכב לא זוהה</b>`}<span class="pill p-review">מהמייל – לבדיקה</span></div>
+   <div class="row between"><div class="who">${esc(t.dealer||"עוד לא שויך לסוחר")}</div><span class="sub">הגיע ${fmt((t.emailReceivedAt||t.receivedDate||"").slice(0,10))}</span></div>
+   <div class="meta"><span>${esc(t.issuer||"גורם לא זוהה")}</span><span>סכום <b>${money(t.amount)}</b></span><span>לתשלום עד <b>${fmt(t.dueDate)}</b></span><span>מספר דוח <b>${esc(t.ticketNo||"—")}</b></span></div>
+   ${t.emailSubject?`<div class="sub">נושא המייל: ${esc(t.emailSubject)}${t.emailFrom?` · מאת ${esc(t.emailFrom)}`:""}</div>`:""}
+   ${miss.length?`<div class="note amber">לא זוהה אוטומטית: ${esc(miss.join(", "))}. צריך להשלים מהקובץ.</div>`:`<div class="note">הפרטים נקראו אוטומטית. בודקים מול הקובץ ומאשרים.</div>`}
+   ${x.warning?`<div class="note amber">${esc(x.warning)}</div>`:""}
+   <div class="actions">
+    <button class="btn primary" data-act="edit" type="button">בדיקה ואישור</button>
+    ${t.fileUrl?`<a class="btn small" href="${esc(t.fileUrl)}" target="_blank" rel="noopener">פתיחת הדוח המקורי</a>`:""}
+   </div></article>`;
+}
 function card(t){
+  if(t.reviewNeeded)return reviewCard(t);
   const s=stage(t), dl=dealerOf(t);
   const d=s.d;
   const daysTxt=(d===null||d===undefined||["paid","dispute","ours"].includes(s.k))?"":(d<0?`<span class="days" style="color:var(--red)">${-d} ימים באיחור</span>`:d===0?`<span class="days" style="color:var(--red)">היום!</span>`:`<span class="days">${d} ימים לכפל</span>`);
@@ -276,13 +304,16 @@ function sorted(list){return list.slice().sort((a,b)=>(daysTo(a.doubleDate||a.du
 function viewToday(){
   if(!state.ready)return `<div class="empty">טוען את הדוחות…</div>`;
   const act=sorted(state.tickets.filter(needsAction));
-  return stats()+`<h2>לטיפול היום <span class="count">${act.length}</span></h2>`+
+  const rev=state.tickets.filter(t=>t.reviewNeeded);
+  return stats()+(rev.length?`<h2>חדש מהמייל – לבדיקה <span class="count">${rev.length}</span></h2><div class="list">${rev.map(reviewCard).join("")}</div>`:"")+
+   `<h2>לטיפול היום <span class="count">${act.length}</span></h2>`+
    (act.length?`<div class="list">${act.map(card).join("")}</div>`:
     `<div class="empty">אין משימות פתוחות להיום.<br>דוח חדש? לחצו על <b>+ דוח חדש</b> למטה.</div>`);
 }
 function viewAll(){
-  const F={open:"פתוחים",red:"דחופים",dispute:"מחלוקת",paid:"שולמו",all:"הכול"};
+  const F={open:"פתוחים",review:"לבדיקה",red:"דחופים",dispute:"מחלוקת",paid:"שולמו",all:"הכול"};
   let l=state.tickets.filter(t=>{const k=stage(t).k;
+    if(state.filter==="review")return k==="review";
     if(state.filter==="open")return !["paid","dispute","ours"].includes(k);
     if(state.filter==="red")return k==="red"||k==="late";
     if(state.filter==="dispute")return k==="dispute"||k==="ours";
@@ -297,8 +328,10 @@ function viewAll(){
 function viewAdd(t){
   t=t||{};const iss=Object.values(state.issuers);
   const curIss=t.issuerId||(iss[0]||{}).id;
-  return `<h2>${t.id?"עריכת דוח":"דוח חדש"}</h2><form class="panel" id="f" novalidate>
+  return `<h2>${t.reviewNeeded?"בדיקת דוח שהגיע במייל":t.id?"עריכת דוח":"דוח חדש"}</h2><form class="panel" id="f" novalidate>
    <input type="hidden" id="f_id" value="${esc(t.id||"")}">
+   ${t.reviewNeeded?`<div class="note amber">הפרטים נקראו אוטומטית מהמייל. בודקים כל שדה מול הדוח המקורי, משלימים מה שחסר ולוחצים "אישור הדוח".
+     ${t.fileUrl?`<div style="margin-top:8px"><a class="btn small" href="${esc(t.fileUrl)}" target="_blank" rel="noopener">פתיחת הדוח המקורי</a></div>`:""}</div>`:""}
    <div class="field"><label for="f_plate">מספר רכב</label><input id="f_plate" inputmode="numeric" class="ltr" value="${esc(t.plate||"")}" required></div>
    <div class="grid2">
     <div class="field"><label for="f_off">תאריך העבירה</label><input id="f_off" type="date" value="${esc(t.offenseDate||"")}"></div>
@@ -314,14 +347,14 @@ function viewAdd(t){
     <div class="field"><label for="f_dbl">מועד כפל קנס</label><input id="f_dbl" type="date" value="${esc(t.doubleDate||"")}"><small>אם ריק: לפי "לתשלום עד". ממנו נספרות התזכורות.</small></div>
    </div>
    <div class="field"><label for="f_place">מקום העבירה (לא חובה)</label><input id="f_place" value="${esc(t.offensePlace||"")}"></div>
-   <div class="field"><label for="f_link">קישור לתשלום</label><input id="f_link" class="ltr" value="${esc(t.id?t.payLink:((state.issuers[curIss]||{}).pay_link||""))}" placeholder="https://"><small>נמלא אוטומטית לפי הגורם. אפשר להדביק קישור ישיר מהדוח.</small></div>
+   <div class="field"><label for="f_link">קישור לתשלום</label><input id="f_link" class="ltr" value="${esc(t.payLink||((state.issuers[curIss]||{}).pay_link||""))}" placeholder="https://"><small>נמלא אוטומטית לפי הגורם. אפשר להדביק קישור ישיר מהדוח.</small></div>
    <details><summary class="sub">פרטים נוספים</summary><div class="grid2" style="margin-top:10px">
     <div class="field"><label for="f_rcpt">מספר קבלה</label><input id="f_rcpt" value="${esc(t.receiptNo||"")}"></div>
     <div class="field"><label for="f_notice">תאריך ההודעה (מודפס על הדוח)</label><input id="f_notice" type="date" value="${esc(t.noticeDate||"")}"></div>
    </div></details>
    <div class="field"><label for="f_notes">הערות</label><textarea id="f_notes">${esc(t.notes||"")}</textarea></div>
-   ${t.id?`<div class="sub">התקבל במערכת: ${fmt(t.receivedDate)}</div>`:`<div class="sub">תאריך הקבלה יירשם אוטומטית: היום, ${fmt(todayISO())}</div>`}
-   <div class="row"><button class="btn primary" type="submit">שמירה</button><button class="btn ghost" type="button" data-tab="today">ביטול</button>
+   ${t.id?`<div class="sub">התקבל במערכת: ${fmt(t.receivedDate)}${t.source==="email"?" (תאריך המייל)":""}</div>`:`<div class="sub">תאריך הקבלה יירשם אוטומטית: היום, ${fmt(todayISO())}</div>`}
+   <div class="row"><button class="btn primary" type="submit">${t.reviewNeeded?"אישור הדוח":"שמירה"}</button><button class="btn ghost" type="button" data-tab="today">ביטול</button>
    ${t.id?`<button class="btn ghost" type="button" id="delBtn" style="color:var(--red);margin-inline-start:auto">מחיקה</button>`:""}</div>
   </form>`;
 }
@@ -499,10 +532,12 @@ document.addEventListener("submit",async e=>{
       due_date:$("#f_due").value||null,double_date:$("#f_dbl").value||$("#f_due").value||null,
       pay_link:$("#f_link").value.trim()||null,notes:$("#f_notes").value.trim()||null};
     const id=$("#f_id").value;let error;
+    const wasReview=!!(id&&state.editing&&state.editing.reviewNeeded);
+    if(wasReview){if(!data.issuer_id)return toast("צריך לבחור גורם מוציא");data.review_needed=false;data.status=m.before?"ours":"open"}
     if(id)({error}=await sb.from("tickets").update(data).eq("id",id));
     else({error}=await sb.from("tickets").insert({...data,status:m.before?"ours":"open",created_by:state.user.id}));
     if(error)throw error;
-    toast(id?"הדוח עודכן":"הדוח נשמר");state.editing=null;await refresh();go("today");
+    toast(wasReview?"הדוח אושר ונכנס לתהליך":id?"הדוח עודכן":"הדוח נשמר");state.editing=null;await refresh();go("today");
   }catch(err){toast("השמירה נכשלה: "+errText(err))}
   finally{state.busy=false}
 });
