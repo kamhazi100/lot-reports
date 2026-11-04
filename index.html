@@ -115,6 +115,16 @@ textarea{min-height:90px;resize:vertical}
 .issuer{display:flex;flex-direction:column;gap:8px;padding:12px 0;border-bottom:1px solid var(--line)}
 .issuer:last-child{border-bottom:0}
 .ltr{direction:ltr;text-align:right}
+.sum5{grid-template-columns:repeat(5,1fr)}
+@media (max-width:560px){.sum5{grid-template-columns:repeat(2,1fr)}.sum5 .stat:last-child{grid-column:1/-1}}
+.dtab{width:100%;border-collapse:collapse;font-size:15px}
+.dtab th{text-align:start;font-size:13px;color:var(--muted);font-weight:700;padding:8px 4px;border-bottom:1px solid var(--line)}
+.dtab td{padding:10px 4px;border-bottom:1px solid var(--line);font-variant-numeric:tabular-nums}
+.dtab tr:last-child td{border-bottom:0}
+.dtab tbody tr{cursor:pointer}
+.dtab tbody tr:hover td,.dtab tbody tr:focus td{background:var(--surface-2)}
+.dtab td:nth-child(2),.dtab th:nth-child(2){text-align:center}
+.dtab td:nth-child(3),.dtab th:nth-child(3){text-align:end;font-weight:700}
 .status-line{font-size:13px;color:var(--muted);margin-top:4px}
 .login{max-width:420px;margin:12vh auto 0}
 body.signed-out nav.tabs,body.signed-out #exportBtn{display:none}
@@ -135,6 +145,7 @@ body.signed-out nav.tabs,body.signed-out #exportBtn{display:none}
   <button data-tab="today" aria-current="page" type="button">היום</button>
   <button data-tab="all" type="button">כל הדוחות</button>
   <button data-tab="add" class="add" type="button">+ דוח חדש</button>
+  <button data-tab="summary" type="button">סיכום</button>
   <button data-tab="settings" type="button">הגדרות</button>
 </nav>
 <div id="sheetHost"></div>
@@ -368,6 +379,36 @@ function viewAdd(t){
    ${t.id?`<button class="btn ghost" type="button" id="delBtn" style="color:var(--red);margin-inline-start:auto">מחיקה</button>`:""}</div>
   </form>`;
 }
+// ---- summary screen (display only). "Open" = not paid, not in dispute, not the lot's, not awaiting review.
+function viewSummary(){
+  if(!state.ready)return `<div class="empty">טוען…</div>`;
+  const amt=t=>Number(t.amount)||0, sum=l=>l.reduce((a,t)=>a+amt(t),0);
+  const open=state.tickets.filter(t=>t.status==="open"&&!t.reviewNeeded);
+  const dd=t=>daysTo(t.doubleDate||t.dueDate);
+  const week=open.filter(t=>{const d=dd(t);return d!==null&&d>=0&&d<=7});
+  const late=open.filter(t=>{const d=dd(t);return d!==null&&d<0});
+  const m=todayISO().slice(0,7);
+  const closed=state.tickets.filter(t=>t.status==="paid"&&(t.closedAt||"").startsWith(m));
+  const by=new Map();
+  for(const t of open){const k=String(t.dealerId||"");const r=by.get(k)||{id:k,name:t.dealer||"לא שויך",n:0,s:0};r.n++;r.s+=amt(t);by.set(k,r)}
+  const rows=[...by.values()].sort((a,b)=>b.s-a.s||b.n-a.n);
+  const shown=state.sumAll?rows:rows.slice(0,5);
+  const tile=(label,big,small,cls)=>`<div class="stat ${cls||""}"><b>${big}</b><span>${label}${small?`<br>${small}`:""}</span></div>`;
+  return `<h2>סיכום</h2>
+   <div class="stats sum5">
+    ${tile("דוחות פתוחים",open.length)}
+    ${tile("שבוע אחרון לתשלום",week.length,money(sum(week)))}
+    ${tile("באיחור",late.length,money(sum(late)),late.length?"alert":"")}
+    ${tile("נסגרו החודש",closed.length)}
+    ${tile("סה״כ חייבים",money(sum(open)))}
+   </div>
+   <h2>לפי סוחר <span class="count">${rows.length}</span></h2>
+   ${rows.length?`<div class="panel" style="padding:4px 14px"><table class="dtab"><thead><tr><th>סוחר</th><th>דוחות פתוחים</th><th>חוב</th></tr></thead><tbody>
+    ${shown.map(r=>`<tr data-dealer="${esc(r.id)}" tabindex="0" role="link"><td>${esc(r.name)}</td><td>${r.n}</td><td>${money(r.s)}</td></tr>`).join("")}
+    </tbody></table>
+    ${rows.length>5?`<div style="padding:10px 0"><button class="btn small ghost" id="sumAll" type="button">${state.sumAll?"הצג פחות":`הצג הכול (${rows.length})`}</button></div>`:""}</div>`
+    :`<div class="empty">אין דוחות פתוחים.</div>`}`;
+}
 function viewSettings(){
   const iss=Object.values(state.issuers);
   return `<h2>גורמים מוציאים וקישורי תשלום</h2><div class="panel">
@@ -407,6 +448,7 @@ function render(){
   if(state.tab==="today")v.innerHTML=viewToday();
   else if(state.tab==="all")v.innerHTML=viewAll();
   else if(state.tab==="add"){v.innerHTML=viewAdd(state.editing);state.match=null;state.matchFor="";showMatch();}
+  else if(state.tab==="summary")v.innerHTML=viewSummary();
   else v.innerHTML=viewSettings();
   document.querySelectorAll("nav.tabs button").forEach(b=>b.setAttribute("aria-current",b.dataset.tab===state.tab?"page":"false"));
 }
@@ -484,6 +526,8 @@ async function dealerIdFor(name){
 document.addEventListener("click",async e=>{
   const tabB=e.target.closest("[data-tab]");if(tabB&&(!e.target.closest("form")||tabB.type==="button")){go(tabB.dataset.tab);return}
   const fb=e.target.closest("[data-filter]");if(fb){state.filter=fb.dataset.filter;render();return}
+  if(e.target.id==="sumAll"){state.sumAll=!state.sumAll;render();return}
+  const dr=e.target.closest("tr[data-dealer]");if(dr){state.customer=dr.dataset.dealer;state.filter="open";go("all");return}
   if(e.target.id==="signOut"){await sb.auth.signOut();return}
   if(e.target.id==="forgot"){const em=$("#em").value.trim();if(!em)return toast("כתבו קודם את המייל");
     const {error}=await sb.auth.resetPasswordForEmail(em,{redirectTo:location.origin+location.pathname});
@@ -510,6 +554,7 @@ document.addEventListener("click",async e=>{
   if(act==="reopen"){if(await saveTicket(id,{status:"open",closed_at:null}))toast("נפתח מחדש")}
   if(act==="edit"){state.editing=t;state.tab="add";render();window.scrollTo(0,0)}
 });
+document.addEventListener("keydown",e=>{const dr=e.target.closest?.("tr[data-dealer]");if(dr&&(e.key==="Enter"||e.key===" ")){e.preventDefault();dr.click()}});
 document.addEventListener("input",e=>{
   if(e.target.id==="q"){state.q=e.target.value;const pos=e.target.selectionStart;render();const q=$("#q");q.focus();q.setSelectionRange(pos,pos)}
   if(e.target.id==="f_plate"||e.target.id==="f_off")showMatch();
