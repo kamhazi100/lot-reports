@@ -151,7 +151,7 @@ const sb=supabase.createClient(SUPABASE_URL,SUPABASE_KEY);
 const $=s=>document.querySelector(s);
 const esc=s=>String(s??"").replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
 const DAY=86400000;
-const state={tab:"today",filter:"open",q:"",tickets:[],dealers:{},dealerByName:{},issuers:{},issuerByName:{},
+const state={tab:"today",filter:"open",q:"",customer:"",tickets:[],dealers:{},dealerByName:{},issuers:{},issuerByName:{},
   ready:false,user:null,mode:"login",editing:null,match:null,matchFor:"",busy:false};
 
 function todayISO(){const d=new Date();d.setMinutes(d.getMinutes()-d.getTimezoneOffset());return d.toISOString().slice(0,10)}
@@ -166,6 +166,7 @@ function errText(e){return e&&(e.message||e.error_description||e.code)||String(e
 // ---- data: load everything the screens need, mapped to the same ticket shape the stage-2 screens used
 function fromRow(r){
   const sent={};(r.message_log||[]).forEach(m=>sent[m.kind]=m.sent_at);
+  const delivered={};(r.deliveries||[]).forEach(m=>delivered[m.kind]=m.delivered_at);
   const sale=r.car_sales||{};
   return {id:r.id,plate:r.plate,model:sale.model||"",saleId:r.sale_id,saleDate:sale.sale_date||"",
     dealerId:r.dealer_id,dealer:(state.dealers[r.dealer_id]||{}).name||"",
@@ -176,14 +177,15 @@ function fromRow(r){
     amount:r.amount,amountAfter:r.amount_after,dueDate:r.due_date||"",doubleDate:r.double_date||"",
     payLink:r.pay_link||"",status:r.status,notes:r.notes||"",isSample:r.is_sample,createdAt:r.created_at,closedAt:r.closed_at,sent,
     source:r.source,reviewNeeded:r.review_needed,emailFrom:r.email_from||"",emailSubject:r.email_subject||"",
-    emailReceivedAt:r.email_received_at,fileUrl:r.file_url||"",extractRaw:r.extract_raw};
+    emailReceivedAt:r.email_received_at,fileUrl:r.file_url||"",extractRaw:r.extract_raw,
+    delivered,reviewReason:r.review_reason||"",instCustomer:r.inst_customer||"",instSaleDate:r.inst_sale_date||""};
 }
 async function load(){
   const [d,i]=await Promise.all([sb.from("dealers").select("id,name,phone").order("name"),sb.from("issuers").select("*").order("id")]);
   if(d.error)throw d.error;if(i.error)throw i.error;
   state.dealers={};state.dealerByName={};d.data.forEach(x=>{state.dealers[x.id]=x;state.dealerByName[x.name]=x});
   state.issuers={};state.issuerByName={};i.data.forEach(x=>{state.issuers[x.id]=x;state.issuerByName[x.name]=x});
-  const t=await sb.from("tickets").select("*, message_log(kind,sent_at), car_sales(sale_date,model)").order("created_at");
+  const t=await sb.from("tickets").select("*, message_log(kind,sent_at), deliveries(kind,delivered_at), car_sales(sale_date,model)").order("created_at");
   if(t.error)throw t.error;
   state.tickets=t.data.map(fromRow);state.ready=true;
   $("#conn").textContent=`מחובר/ת: ${state.user.email} · ${state.tickets.length} דוחות`;
@@ -222,35 +224,36 @@ function stage(t){
 }
 function needsAction(t){const s=stage(t);return !t.reviewNeeded&&(s.msg||s.check||s.k==="red"||s.k==="late")}
 
-// ---- WhatsApp messages. Opening line is only "שלום {dealer}," (decision 04/11/2026)
-function message(t,kind){
-  const iss=state.issuerByName[t.issuer]||{};
-  const head=`שלום ${(t.dealer||"").trim()},`;
-  const car=`רכב ${plateFmt(t.plate)}${t.model?" ("+t.model+")":""}, שנמכר לכם בתאריך ${fmt(t.saleDate)}`;
-  const det=`פרטי הדוח:\n• גורם: ${t.issuer||"—"}\n• מספר דוח: ${t.ticketNo||"—"}\n• תאריך העבירה: ${fmt(t.offenseDate)}${t.offensePlace?"\n• מקום: "+t.offensePlace:""}\n• סכום: ${money(t.amount)}\n• לתשלום עד: ${fmt(t.dueDate)}`;
-  const after=t.amountAfter?`\nאחרי ${fmt(t.dueDate)} הסכום עולה ל־${money(t.amountAfter)}.`:"";
-  const pay=(t.payLink?`\nלתשלום באתר הרשמי:\n${t.payLink}`:"")+
-    (iss.pay_note&&t.ticketNo?`\n(${iss.pay_note}: ${t.ticketNo})`:"")+
-    (iss.pay_phone?`\nאפשר לשלם גם בטלפון: ${iss.pay_phone}`:"");
-  const dbl=t.doubleDate?fmt(t.doubleDate):fmt(t.dueDate);
-  const end=`\nאין צורך לשלוח לנו אישור – אנחנו נבדוק את הסטטוס בעצמנו.\nתודה רבה!`;
-  if(kind==="intake")return `${head}\nהגיע אלינו דוח על ${car}.\n\n${det}${after}${pay}\n\nחשוב לשלם עד ${dbl} כדי להימנע מכפל קנס.${end}`;
-  if(kind==="r5")return `${head}\nתזכורת ידידותית: הדוח על ${car} עדיין פתוח.\nבעוד 5 ימים (${dbl}) הסכום עלול להיות מוכפל.\n\n${det}${after}${pay}${end}`;
-  if(kind==="r3")return `${head}\nתזכורת שנייה: נשארו 3 ימים (עד ${dbl}) לתשלום הדוח על ${car} לפני כפל קנס.\n\n${det}${after}${pay}\n\nנשמח אם תסגרו את זה היום.${end}`;
-  return `${head}\nהדוח על ${car} עובר מחר (${dbl}) לכפל קנס.\nבבקשה לשלם עוד היום:${pay||"\n(קישור לתשלום לא הוזן)"}\n\nמספר דוח: ${t.ticketNo||"—"} | סכום: ${money(t.amount)}\nתודה!`;
+// ---- WhatsApp messages: built in the database (ticket_message), the same text Inst receives.
+async function message(t,kind){
+  const {data,error}=await sb.rpc("ticket_message",{p_ticket:t.id,p_kind:kind});
+  if(error)throw error;return data||"";
 }
 const MSG_NAME={intake:"הודעת קליטה",r5:"תזכורת 5 ימים",r3:"תזכורת 3 ימים",r1:"הודעה דחופה – יום לפני"};
 
 // ---- rendering
 function reviewCard(t){
   const x=t.extractRaw||{};
-  const miss=[!t.plate&&"מספר רכב",!t.issuerId&&"גורם מוציא",!t.dueDate&&"מועד תשלום",!t.amount&&"סכום"].filter(Boolean);
+  const fromInst=t.source==="inst";
+  if(t.reviewReason==="conflict")return `<article class="card s-red" data-id="${esc(t.id)}">
+   <div class="row between">${plateHTML(t.plate)}<span class="row" style="gap:6px">${t.isSample?`<span class="sample">לדוגמה</span>`:""}<span class="pill p-red">סתירת קונה</span></span></div>
+   <div class="note red">לרכב הזה רשום במאגר קונה אחר מזה שאינסט שלחה. מי נכון?</div>
+   <div class="meta"><span>במאגר: <b>${esc(t.dealer||x.db_customer||"—")}</b>${t.saleDate?` (נמכר ${fmt(t.saleDate)})`:""}</span>
+    <span>מאינסט: <b>${esc(t.instCustomer||"—")}</b>${t.instSaleDate?` (נמכר ${fmt(t.instSaleDate)})`:""}</span></div>
+   <div class="meta"><span>${esc(t.issuer||"")}</span><span>מספר דוח <b>${esc(t.ticketNo||"—")}</b></span><span>סכום <b>${money(t.amount)}</b></span><span>כפל ב־<b>${fmt(t.doubleDate||t.dueDate)}</b></span></div>
+   <div class="actions">
+    <button class="btn" data-act="keepdb" type="button">${esc(t.dealer||"הקונה במאגר")} נכון</button>
+    <button class="btn" data-act="takeinst" type="button">${esc(t.instCustomer||"הקונה מאינסט")} נכון</button>
+    <button class="btn small ghost" data-act="edit" type="button">עריכה</button>
+   </div></article>`;
+  const miss=(x.missing&&x.missing.length)?x.missing:[!t.plate&&"מספר רכב",!t.issuerId&&"גורם מוציא",!t.dueDate&&"מועד תשלום",!t.amount&&"סכום"].filter(Boolean);
   return `<article class="card s-review" data-id="${esc(t.id)}">
-   <div class="row between">${t.plate?plateHTML(t.plate):`<b>מספר רכב לא זוהה</b>`}<span class="pill p-review">מהמייל – לבדיקה</span></div>
-   <div class="row between"><div class="who">${esc(t.dealer||"עוד לא שויך לסוחר")}</div><span class="sub">הגיע ${fmt((t.emailReceivedAt||t.receivedDate||"").slice(0,10))}</span></div>
+   <div class="row between">${t.plate?plateHTML(t.plate):`<b>מספר רכב לא זוהה</b>`}<span class="row" style="gap:6px">${t.isSample?`<span class="sample">לדוגמה</span>`:""}<span class="pill p-review">${fromInst?"מאינסט":"מהמייל"} – לבדיקה</span></span></div>
+   <div class="row between"><div class="who">${esc(t.dealer||t.instCustomer||"עוד לא שויך לסוחר")}</div><span class="sub">הגיע ${fmt((t.emailReceivedAt||t.receivedDate||"").slice(0,10))}</span></div>
    <div class="meta"><span>${esc(t.issuer||"גורם לא זוהה")}</span><span>סכום <b>${money(t.amount)}</b></span><span>לתשלום עד <b>${fmt(t.dueDate)}</b></span><span>מספר דוח <b>${esc(t.ticketNo||"—")}</b></span></div>
    ${t.emailSubject?`<div class="sub">נושא המייל: ${esc(t.emailSubject)}${t.emailFrom?` · מאת ${esc(t.emailFrom)}`:""}</div>`:""}
-   ${miss.length?`<div class="note amber">לא זוהה אוטומטית: ${esc(miss.join(", "))}. צריך להשלים מהקובץ.</div>`:`<div class="note">הפרטים נקראו אוטומטית. בודקים מול הקובץ ומאשרים.</div>`}
+   ${miss.length?`<div class="note amber">${fromInst?"חסר בדוח שאינסט שלחה":"לא זוהה אוטומטית"}: ${esc(miss.join(", "))}. צריך להשלים ולאשר.</div>`:`<div class="note">הפרטים נקראו אוטומטית. בודקים ומאשרים.</div>`}
+   ${fromInst&&t.instCustomer?`<div class="sub">לקוח לפי אינסט: ${esc(t.instCustomer)}${t.instSaleDate?` · נמכר ${fmt(t.instSaleDate)}`:""}</div>`:""}
    ${x.warning?`<div class="note amber">${esc(x.warning)}</div>`:""}
    <div class="actions">
     <button class="btn primary" data-act="edit" type="button">בדיקה ואישור</button>
@@ -270,11 +273,15 @@ function card(t){
   if(t.notes)note+=`<div class="note">${esc(t.notes)}</div>`;
   const closed=["paid","dispute","ours"].includes(s.k);
   const sentList=Object.keys(MSG_NAME).filter(k=>t.sent[k]).map(k=>`${MSG_NAME[k]} ${fmt(t.sent[k])}`).join(" · ");
+  const delList=Object.keys(MSG_NAME).filter(k=>t.delivered[k]).map(k=>`${MSG_NAME[k]} ${fmt(t.delivered[k])}`).join(" · ");
+  const noLink=!t.payLink&&!(state.issuers[t.issuerId]||{}).pay_link;
+  if(noLink&&!closed)note+=`<div class="note amber">חסר קישור לתשלום. צריך להשלים בעריכה (או בהגדרות של הגורם) לפני שליחה.</div>`;
   return `<article class="card s-${s.k}" data-id="${esc(t.id)}">
    <div class="row between">${plateHTML(t.plate)}<span class="row" style="gap:6px">${t.isSample?`<span class="sample">לדוגמה</span>`:""}<span class="pill p-${s.k}">${esc(s.label)}</span></span></div>
    <div class="row between"><div class="who">${esc(t.dealer||"לא שויך")}</div>${daysTxt}</div>
    <div class="meta"><span>${esc(t.issuer||"")}</span><span>סכום <b>${money(t.amount)}</b></span><span>כפל ב־<b>${fmt(t.doubleDate||t.dueDate)}</b></span><span>נמכר <b>${fmt(t.saleDate)}</b></span><span>התקבל <b>${fmt(t.receivedDate)}</b></span></div>
-   ${sentList?`<div class="sub">נשלח: ${esc(sentList)}</div>`:""}
+   ${delList?`<div class="sub">נמסר לאינסט: ${esc(delList)}</div>`:""}
+   ${sentList?`<div class="sub">נשלח לסוחר: ${esc(sentList)}</div>`:""}
    ${note}
    <div class="actions">
     ${s.msg?`<button class="btn wa" data-act="msg" data-kind="${s.msg}" type="button">${MSG_NAME[s.msg]}</button>`:""}
@@ -305,7 +312,7 @@ function viewToday(){
   if(!state.ready)return `<div class="empty">טוען את הדוחות…</div>`;
   const act=sorted(state.tickets.filter(needsAction));
   const rev=state.tickets.filter(t=>t.reviewNeeded);
-  return stats()+(rev.length?`<h2>חדש מהמייל – לבדיקה <span class="count">${rev.length}</span></h2><div class="list">${rev.map(reviewCard).join("")}</div>`:"")+
+  return stats()+(rev.length?`<h2>לבדיקה <span class="count">${rev.length}</span></h2><div class="list">${rev.map(reviewCard).join("")}</div>`:"")+
    `<h2>לטיפול היום <span class="count">${act.length}</span></h2>`+
    (act.length?`<div class="list">${act.map(card).join("")}</div>`:
     `<div class="empty">אין משימות פתוחות להיום.<br>דוח חדש? לחצו על <b>+ דוח חדש</b> למטה.</div>`);
@@ -318,9 +325,12 @@ function viewAll(){
     if(state.filter==="red")return k==="red"||k==="late";
     if(state.filter==="dispute")return k==="dispute"||k==="ours";
     if(state.filter==="paid")return k==="paid";return true});
+  if(state.customer)l=l.filter(t=>String(t.dealerId)===state.customer);
+  const custs=[...new Map(state.tickets.filter(t=>t.dealerId).map(t=>[String(t.dealerId),t.dealer])).entries()].sort((a,b)=>a[1].localeCompare(b[1],"he"));
   const q=state.q.trim();
   if(q)l=l.filter(t=>normPlate(q)&&normPlate(t.plate).includes(normPlate(q))||(t.dealer||"").includes(q)||(t.ticketNo||"").includes(q));
   return `<input class="search" id="q" type="search" placeholder="חיפוש לפי מספר רכב, סוחר או מספר דוח" value="${esc(state.q)}">
+   <div class="field" style="margin-bottom:10px"><label for="custSel">לקוח</label><select id="custSel"><option value="">כל הלקוחות</option>${custs.map(([id,n])=>`<option value="${esc(id)}" ${state.customer===id?"selected":""}>${esc(n)}</option>`).join("")}</select></div>
    <div class="chips">${Object.entries(F).map(([k,v])=>`<button class="chip" data-filter="${k}" aria-pressed="${state.filter===k}" type="button">${v}</button>`).join("")}</div>
    <h2>${F[state.filter]} <span class="count">${l.length}</span></h2>`+
    (l.length?`<div class="list">${sorted(l).map(card).join("")}</div>`:`<div class="empty">אין דוחות ברשימה הזו.</div>`);
@@ -417,16 +427,17 @@ async function doMatch(){
     box.innerHTML=`<div class="match ${m.before?"warn":"ok"}">נמכר ל<b>${esc(m.buyer)}</b> בתאריך ${fmt(m.sale_date)}${m.model?` · ${esc(m.model)}`:""}${m.sales>1?`<br>הרכב נמכר ${m.sales} פעמים. נבחר מי שהחזיק בו ביום העבירה.`:""}${m.before?"<br>העבירה קרתה לפני המכירה – כנראה שהדוח שלנו.":""}${!off?"<br><small>הזינו תאריך עבירה כדי לוודא את השיוך.</small>":""}</div>`;
   }else{
     box.innerHTML=`<div class="match miss"><b>לא נמצא לקוח רשום לרכב מספר ${esc(plateFmt(p))}. מי הלקוח?</b>
-     <div class="grid2" style="margin-top:8px"><div class="field"><label for="o_name">שם הקונה / הסוחר</label><input id="o_name" list="dealerList"></div>
-     <div class="field"><label for="o_date">תאריך מכירה</label><input id="o_date" type="date"></div></div>
+     <div class="grid2" style="margin-top:8px"><div class="field"><label for="o_name">שם הקונה / הסוחר</label><input id="o_name" list="dealerList" value="${esc(state.editing?.instCustomer||"")}"></div>
+     <div class="field"><label for="o_date">תאריך מכירה</label><input id="o_date" type="date" value="${esc(state.editing?.instSaleDate||"")}"></div></div>
      <datalist id="dealerList">${Object.values(state.dealers).map(d=>`<option value="${esc(d.name)}">`).join("")}</datalist>
      <small>התשובה תישמר לרכב הזה לפעם הבאה.</small></div>`;
   }
 }
 
 // ---- WhatsApp sheet: no phone number; Daniela picks the contact in WhatsApp
-function openMsg(t,kind){
-  const txt=message(t,kind), dl=dealerOf(t);
+async function openMsg(t,kind){
+  let txt;try{txt=await message(t,kind)}catch(e){return toast("לא הצלחתי להכין את ההודעה: "+errText(e))}
+  const dl=dealerOf(t);
   const url=`https://wa.me/?text=${encodeURIComponent(txt)}`;
   const already=t.sent[kind];
   $("#sheetHost").innerHTML=`<div class="sheet" id="sh"><div role="dialog" aria-label="${MSG_NAME[kind]}">
@@ -436,15 +447,17 @@ function openMsg(t,kind){
    <div class="msg" id="msgText">${esc(txt)}</div>
    <div class="actions"><a class="btn wa" href="${esc(url)}" target="_blank" rel="noopener" id="waGo">העתקה ופתיחה בוואטסאפ</a>
    <button class="btn" id="copyBtn" type="button">העתקה בלבד</button>
-   ${already?"":`<button class="btn primary" id="markSent" type="button">סמן כנשלח</button>`}</div>
-   <div class="sub">${already?`השלב הזה כבר סומן כנשלח ב־${fmt(already)}.`:`בוואטסאפ בוחרים את ${esc(dl.name||"הסוחר")} ושולחים. אחר כך לוחצים "סמן כנשלח".`}</div></div></div>`;
+   ${already?"":`<button class="btn primary" id="markSent" type="button">סמן כנשלח לסוחר</button>`}</div>
+   ${t.delivered[kind]?`<div class="sub">ההודעה הזו נמסרה לאינסט ב־${fmt(t.delivered[kind])}.</div>`:""}
+   ${/קישור לתשלום חסר/.test(txt)?`<div class="note amber">חסר קישור לתשלום. כדאי להשלים אותו בעריכת הדוח לפני השליחה.</div>`:""}
+   <div class="sub">${already?`השלב הזה כבר סומן כנשלח לסוחר ב־${fmt(already)}.`:`בוואטסאפ בוחרים את ${esc(dl.name||"הסוחר")} ושולחים. אחר כך לוחצים "סמן כנשלח לסוחר".`}</div></div></div>`;
   $("#sh").addEventListener("click",e=>{if(e.target.id==="sh"||e.target.closest("[data-close]"))closeSheet()});
   const copy=()=>navigator.clipboard?.writeText(txt).then(()=>toast("ההודעה הועתקה"),()=>{selectText($("#msgText"));toast("סמנו והעתיקו ידנית")});
   $("#copyBtn").onclick=copy;$("#waGo").addEventListener("click",copy);
   const ms=$("#markSent");if(ms)ms.onclick=async()=>{ms.disabled=true;
     const {error}=await sb.from("message_log").insert({ticket_id:t.id,kind,sent_by:state.user.id});
     if(error&&error.code!=="23505"){ms.disabled=false;return toast("השמירה נכשלה: "+errText(error))}
-    closeSheet();toast(error?"השלב הזה כבר היה רשום":"סומן כנשלח");await refresh();render()};
+    closeSheet();toast(error?"השלב הזה כבר היה רשום":"סומן כנשלח לסוחר");await refresh();render()};
 }
 function selectText(el){const r=document.createRange();r.selectNodeContents(el);const s=getSelection();s.removeAllRanges();s.addRange(r)}
 function closeSheet(){$("#sheetHost").innerHTML=""}
@@ -484,6 +497,14 @@ document.addEventListener("click",async e=>{
   const id=a.closest(".card").dataset.id;const t=state.tickets.find(x=>x.id===id);if(!t)return;
   const act=a.dataset.act;
   if(act==="msg")openMsg(t,a.dataset.kind);
+  if(act==="keepdb"||act==="takeinst"){
+    const who=act==="keepdb"?(t.dealer||"הקונה במאגר"):(t.instCustomer||"הקונה מאינסט");
+    const text=act==="keepdb"?`להשאיר את ${who} כקונה, ולהכניס את הדוח לתהליך?`
+      :`לרשום את ${who} כקונה של רכב ${plateFmt(t.plate)}${t.instSaleDate?` (מכירה מ־${fmt(t.instSaleDate)})`:""}, ולהכניס את הדוח לתהליך? השיוך של הרכב במאגר ישתנה.`;
+    confirmSheet(text,"כן, "+who+" נכון",async()=>{
+      const {error}=await sb.rpc("resolve_conflict",{p_ticket:id,p_choice:act==="keepdb"?"db":"inst"});
+      if(error)return toast("השמירה נכשלה: "+errText(error));toast("נשמר. הדוח נכנס לתהליך");await refresh();render()});
+  }
   if(act==="paid")confirmSheet(`לסמן שהדוח לרכב ${plateFmt(t.plate)} שולם?`,"כן, שולם",async()=>{if(await saveTicket(id,{status:"paid",closed_at:new Date().toISOString()}))toast("נסגר בהצלחה")});
   if(act==="dispute")confirmSheet(`להעביר למחלוקת ולהקפיא תזכורות?`,"העבר למחלוקת",async()=>{if(await saveTicket(id,{status:"dispute"}))toast("הועבר לטיפול ידני")});
   if(act==="reopen"){if(await saveTicket(id,{status:"open",closed_at:null}))toast("נפתח מחדש")}
@@ -494,6 +515,7 @@ document.addEventListener("input",e=>{
   if(e.target.id==="f_plate"||e.target.id==="f_off")showMatch();
 });
 document.addEventListener("change",e=>{
+  if(e.target.id==="custSel"){state.customer=e.target.value;render();return}
   if(e.target.id==="f_issuer"){const l=$("#f_link");const urls=Object.values(state.issuers).map(i=>i.pay_link||"");
     if(!l.value||urls.includes(l.value))l.value=(state.issuers[e.target.value]||{}).pay_link||""}
 });
@@ -533,7 +555,7 @@ document.addEventListener("submit",async e=>{
       pay_link:$("#f_link").value.trim()||null,notes:$("#f_notes").value.trim()||null};
     const id=$("#f_id").value;let error;
     const wasReview=!!(id&&state.editing&&state.editing.reviewNeeded);
-    if(wasReview){if(!data.issuer_id)return toast("צריך לבחור גורם מוציא");data.review_needed=false;data.status=m.before?"ours":"open"}
+    if(wasReview){if(!data.issuer_id)return toast("צריך לבחור גורם מוציא");data.review_needed=false;data.review_reason=null;data.status=m.before?"ours":"open"}
     if(id)({error}=await sb.from("tickets").update(data).eq("id",id));
     else({error}=await sb.from("tickets").insert({...data,status:m.before?"ours":"open",created_by:state.user.id}));
     if(error)throw error;
