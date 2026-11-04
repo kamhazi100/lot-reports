@@ -1,0 +1,534 @@
+<!DOCTYPE html>
+<html lang="he" dir="rtl">
+<head>
+<title>דוחות מגרש</title>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="robots" content="noindex">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Assistant:wght@400;600;700&family=Rubik:wght@500;700;800&display=swap">
+<style>
+/* Layout: one-column phone app — sticky header, "today" action queue first, then all tickets; bottom tab bar.
+   Design carried over unchanged from reference/lot-reports.html (stage 2). */
+:root{
+  --bg:#eef0f2; --surface:#ffffff; --surface-2:#f6f7f8; --fg:#1b2026; --muted:#5e6873; --line:#d9dde2;
+  --accent:#1f5f8b; --accent-fg:#ffffff;
+  --plate:#f7c81e; --plate-ink:#111111; --plate-edge:#1b2026;
+  --red:#c62828; --red-bg:#fde8e8; --amber:#a35c00; --amber-bg:#fff1d6; --green:#1e7a3c; --green-bg:#e3f4e8; --grey-bg:#e7e9ec;
+  --wa:#1d8a4e;
+  --f-display:"Rubik",system-ui,sans-serif; --f-body:"Assistant",system-ui,sans-serif;
+  --r:12px;
+}
+@media (prefers-color-scheme:dark){:root:not([data-theme="light"]){
+  --bg:#12161a; --surface:#1b2126; --surface-2:#222930; --fg:#e8ecef; --muted:#9aa5b0; --line:#323b44;
+  --accent:#6fb3e3; --accent-fg:#0d1a24; --plate:#e9bb12; --plate-ink:#111; --plate-edge:#000;
+  --red:#ff7b7b; --red-bg:#3a1c1c; --amber:#ffb84d; --amber-bg:#3a2a12; --green:#6fd38f; --green-bg:#16301f; --grey-bg:#2a3138; --wa:#3ccf7d;
+  color-scheme:dark}}
+*{box-sizing:border-box}
+html,body{background:var(--bg)}
+body{color:var(--fg);font-family:var(--f-body);font-size:16px;line-height:1.45;direction:rtl;margin:0;
+  padding-left:max(16px,env(safe-area-inset-left,0px));padding-right:max(16px,env(safe-area-inset-right,0px));padding-block:0 96px}
+body::before{content:"";position:fixed;inset:0 0 auto;height:env(safe-area-inset-top,0px);z-index:10;background:var(--bg)}
+.wrap{max-width:680px;margin:0 auto}
+header{position:sticky;top:env(safe-area-inset-top,0px);z-index:5;background:var(--bg);padding-block:14px 10px;display:flex;align-items:center;justify-content:space-between;gap:12px}
+h1{font-family:var(--f-display);font-weight:800;font-size:22px;margin:0;letter-spacing:-.01em}
+.sub{color:var(--muted);font-size:14px}
+button,input,select,textarea{font:inherit;color:inherit}
+button{cursor:pointer}
+:focus-visible{outline:3px solid var(--accent);outline-offset:2px}
+.btn{border:1px solid var(--line);background:var(--surface);border-radius:10px;padding:9px 14px;font-weight:600;min-height:42px;text-decoration:none;display:inline-flex;align-items:center;justify-content:center}
+.btn.primary{background:var(--accent);color:var(--accent-fg);border-color:var(--accent)}
+.btn.wa{background:var(--wa);color:#fff;border-color:var(--wa)}
+.btn.ghost{background:transparent}
+.btn.small{min-height:34px;padding:5px 10px;font-size:14px}
+.btn:disabled{opacity:.5}
+.stats{display:grid;grid-template-columns:repeat(4,1fr);gap:8px;margin-block:4px 14px}
+.stat{background:var(--surface);border-radius:var(--r);padding:10px;border:1px solid var(--line);min-width:0}
+.stat b{display:block;font-family:var(--f-display);font-size:22px;font-variant-numeric:tabular-nums}
+.stat span{font-size:12.5px;color:var(--muted)}
+.stat.alert b{color:var(--red)}
+@media (max-width:420px){.stats{grid-template-columns:repeat(2,1fr)}}
+h2{font-family:var(--f-display);font-size:17px;font-weight:700;margin:20px 0 10px;display:flex;align-items:center;gap:8px}
+h2 .count{font-family:var(--f-body);font-size:13px;color:var(--muted);font-weight:600}
+.list{display:flex;flex-direction:column;gap:10px}
+.card{background:var(--surface);border:1px solid var(--line);border-radius:var(--r);padding:12px;display:flex;flex-direction:column;gap:10px;border-inline-start:5px solid var(--line)}
+.card.s-red,.card.s-late{border-inline-start-color:var(--red)}
+.card.s-r3,.card.s-r5{border-inline-start-color:var(--amber)}
+.card.s-paid{border-inline-start-color:var(--green)}
+.card.s-dispute,.card.s-ours{border-inline-start-color:var(--muted)}
+.row{display:flex;align-items:center;gap:10px;flex-wrap:wrap}
+.between{justify-content:space-between}
+.plate{display:inline-flex;align-items:stretch;border:2px solid var(--plate-edge);border-radius:6px;overflow:hidden;background:var(--plate);color:var(--plate-ink);font-family:var(--f-display);font-weight:700;font-size:17px;letter-spacing:.04em;direction:ltr;font-variant-numeric:tabular-nums}
+.plate i{font-style:normal;background:#1c4fa8;color:#fff;font-size:9px;line-height:1.1;padding:3px 4px;display:flex;flex-direction:column;justify-content:center;text-align:center;letter-spacing:0}
+.plate span{padding:2px 8px}
+.who{font-weight:700;font-size:16px;min-width:0}
+.meta{color:var(--muted);font-size:14px;display:flex;gap:4px 14px;flex-wrap:wrap}
+.meta b{color:var(--fg);font-weight:600;font-variant-numeric:tabular-nums}
+.pill{font-size:13px;font-weight:700;padding:3px 10px;border-radius:999px;white-space:nowrap}
+.p-red,.p-late{background:var(--red-bg);color:var(--red)}
+.p-r3,.p-r5{background:var(--amber-bg);color:var(--amber)}
+.p-paid{background:var(--green-bg);color:var(--green)}
+.p-new,.p-wait,.p-dispute,.p-ours{background:var(--grey-bg);color:var(--muted)}
+.sample{font-size:12px;font-weight:700;padding:2px 8px;border-radius:999px;background:var(--grey-bg);color:var(--muted)}
+.days{font-family:var(--f-display);font-weight:800;font-variant-numeric:tabular-nums}
+.note{font-size:14px;background:var(--surface-2);border-radius:8px;padding:8px 10px}
+.note.red{background:var(--red-bg);color:var(--red);font-weight:600}
+.note.amber{background:var(--amber-bg);color:var(--amber);font-weight:600}
+.actions{display:flex;gap:8px;flex-wrap:wrap}
+.empty{text-align:center;color:var(--muted);padding:28px 12px;background:var(--surface);border:1px dashed var(--line);border-radius:var(--r)}
+.chips{display:flex;gap:6px;overflow-x:auto;padding-bottom:4px}
+.chip{border:1px solid var(--line);background:var(--surface);border-radius:999px;padding:6px 12px;font-size:14px;font-weight:600;white-space:nowrap}
+.chip[aria-pressed="true"]{background:var(--fg);color:var(--bg);border-color:var(--fg)}
+nav.tabs{position:fixed;inset:auto 0 0;z-index:6;background:var(--surface);border-top:1px solid var(--line);display:flex;justify-content:space-around;
+  padding:6px max(16px,env(safe-area-inset-right,0px)) calc(6px + env(safe-area-inset-bottom,0px)) max(16px,env(safe-area-inset-left,0px))}
+nav.tabs button{border:0;background:none;padding:6px 10px;font-weight:700;font-size:14px;color:var(--muted);border-radius:8px;min-width:64px}
+nav.tabs button[aria-current="page"]{color:var(--accent);background:var(--surface-2)}
+nav.tabs .add{background:var(--accent);color:var(--accent-fg)!important}
+form{display:flex;flex-direction:column;gap:12px}
+.field{display:flex;flex-direction:column;gap:4px;min-width:0}
+.field label{font-size:14px;font-weight:700}
+.field small{color:var(--muted);font-size:13px}
+.grid2{display:grid;grid-template-columns:1fr 1fr;gap:12px}
+@media (max-width:420px){.grid2{grid-template-columns:1fr}}
+input,select,textarea{border:1px solid var(--line);background:var(--surface);border-radius:10px;padding:10px 12px;min-height:44px;width:100%}
+input[type="date"]{direction:rtl}
+textarea{min-height:90px;resize:vertical}
+.panel{background:var(--surface);border:1px solid var(--line);border-radius:var(--r);padding:14px}
+.match{border-radius:10px;padding:10px 12px;font-size:15px}
+.match.ok{background:var(--green-bg);color:var(--green)}
+.match.miss{background:var(--amber-bg);color:var(--amber)}
+.match.warn{background:var(--red-bg);color:var(--red)}
+.sheet{position:fixed;inset:0;z-index:20;background:rgba(10,14,18,.55);display:flex;align-items:flex-end;justify-content:center}
+.sheet>div{background:var(--surface);width:100%;max-width:680px;border-radius:16px 16px 0 0;max-height:88%;overflow:auto;
+  padding:16px max(16px,env(safe-area-inset-right,0px)) calc(16px + env(safe-area-inset-bottom,0px)) max(16px,env(safe-area-inset-left,0px));display:flex;flex-direction:column;gap:12px}
+.msg{white-space:pre-wrap;background:var(--surface-2);border-radius:10px;padding:12px;font-size:15px;border:1px solid var(--line)}
+.toast{position:fixed;bottom:calc(80px + env(safe-area-inset-bottom,0px));left:50%;transform:translateX(-50%);background:var(--fg);color:var(--bg);padding:10px 16px;border-radius:10px;font-weight:600;z-index:30}
+.search{margin-bottom:10px}
+.issuer{display:flex;flex-direction:column;gap:8px;padding:12px 0;border-bottom:1px solid var(--line)}
+.issuer:last-child{border-bottom:0}
+.ltr{direction:ltr;text-align:right}
+.status-line{font-size:13px;color:var(--muted);margin-top:4px}
+.login{max-width:420px;margin:12vh auto 0}
+body.signed-out nav.tabs,body.signed-out #exportBtn{display:none}
+@media (prefers-reduced-motion:no-preference){.card{transition:border-color .2s}}
+</style>
+</head>
+<body class="signed-out">
+<div class="wrap">
+<header>
+  <div><h1>דוחות מגרש</h1><div class="sub" id="today"></div></div>
+  <button class="btn small ghost" id="exportBtn" type="button">ייצוא לגיליון</button>
+</header>
+<main id="view"><div class="empty">טוען…</div></main>
+<div class="status-line" id="conn"></div>
+</div>
+
+<nav class="tabs" aria-label="ניווט">
+  <button data-tab="today" aria-current="page" type="button">היום</button>
+  <button data-tab="all" type="button">כל הדוחות</button>
+  <button data-tab="add" class="add" type="button">+ דוח חדש</button>
+  <button data-tab="settings" type="button">הגדרות</button>
+</nav>
+<div id="sheetHost"></div>
+
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+<script>
+(function(){
+// ---- connection (publishable key: safe in a web page; data is protected by sign-in rules in the database)
+const SUPABASE_URL="https://rhyzmdstxpkoxhfsqhsm.supabase.co";
+const SUPABASE_KEY="sb_publishable_hPWjaBq2iWJU2HPf1p4RKw_Qu1ODN_D";
+const START_HASH=location.hash; // read before the client consumes invite/recovery links
+const sb=supabase.createClient(SUPABASE_URL,SUPABASE_KEY);
+
+const $=s=>document.querySelector(s);
+const esc=s=>String(s??"").replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
+const DAY=86400000;
+const state={tab:"today",filter:"open",q:"",tickets:[],dealers:{},dealerByName:{},issuers:{},issuerByName:{},
+  ready:false,user:null,mode:"login",editing:null,match:null,matchFor:"",busy:false};
+
+function todayISO(){const d=new Date();d.setMinutes(d.getMinutes()-d.getTimezoneOffset());return d.toISOString().slice(0,10)}
+function fmt(iso){if(!iso)return"—";const [y,m,d]=iso.slice(0,10).split("-");return `${d}/${m}/${y}`}
+function daysTo(iso){if(!iso)return null;return Math.round((new Date(iso+"T00:00:00")-new Date(todayISO()+"T00:00:00"))/DAY)}
+function money(n){const v=Number(n);return isFinite(v)&&v?"₪"+v.toLocaleString("he-IL"):"—"}
+function normPlate(p){return String(p||"").replace(/\D/g,"")}
+function plateFmt(p){p=normPlate(p);if(p.length===7)return p.slice(0,2)+"-"+p.slice(2,5)+"-"+p.slice(5);if(p.length===8)return p.slice(0,3)+"-"+p.slice(3,5)+"-"+p.slice(5);return p}
+function plateHTML(p){return `<span class="plate" aria-label="מספר רכב ${esc(p)}"><i>IL<br>ישראל</i><span>${esc(plateFmt(p))}</span></span>`}
+function errText(e){return e&&(e.message||e.error_description||e.code)||String(e)}
+
+// ---- data: load everything the screens need, mapped to the same ticket shape the stage-2 screens used
+function fromRow(r){
+  const sent={};(r.message_log||[]).forEach(m=>sent[m.kind]=m.sent_at);
+  const sale=r.car_sales||{};
+  return {id:r.id,plate:r.plate,model:sale.model||"",saleId:r.sale_id,saleDate:sale.sale_date||"",
+    dealerId:r.dealer_id,dealer:(state.dealers[r.dealer_id]||{}).name||"",
+    issuerId:r.issuer_id,issuer:(state.issuers[r.issuer_id]||{}).name||"",
+    ticketNo:r.ticket_no||"",receiptNo:r.receipt_no||"",
+    offenseDate:r.offense_at?r.offense_at.slice(0,10):"",offenseTime:r.offense_at?r.offense_at.slice(11,16):"",
+    offensePlace:r.offense_place||"",noticeDate:r.notice_date||"",receivedDate:r.received_date||"",
+    amount:r.amount,amountAfter:r.amount_after,dueDate:r.due_date||"",doubleDate:r.double_date||"",
+    payLink:r.pay_link||"",status:r.status,notes:r.notes||"",isSample:r.is_sample,createdAt:r.created_at,closedAt:r.closed_at,sent};
+}
+async function load(){
+  const [d,i]=await Promise.all([sb.from("dealers").select("id,name,phone").order("name"),sb.from("issuers").select("*").order("id")]);
+  if(d.error)throw d.error;if(i.error)throw i.error;
+  state.dealers={};state.dealerByName={};d.data.forEach(x=>{state.dealers[x.id]=x;state.dealerByName[x.name]=x});
+  state.issuers={};state.issuerByName={};i.data.forEach(x=>{state.issuers[x.id]=x;state.issuerByName[x.name]=x});
+  const t=await sb.from("tickets").select("*, message_log(kind,sent_at), car_sales(sale_date,model)").order("created_at");
+  if(t.error)throw t.error;
+  state.tickets=t.data.map(fromRow);state.ready=true;
+  $("#conn").textContent=`מחובר/ת: ${state.user.email} · ${state.tickets.length} דוחות`;
+}
+async function refresh(){
+  if(!state.user)return;
+  try{await load();if(!(state.tab==="add"||state.tab==="settings"||document.activeElement?.matches("input,textarea,select")||$("#sh")))render()}
+  catch(e){$("#conn").textContent="אין חיבור למאגר: "+errText(e)}
+}
+
+// ---- who owned the car on the offense date: latest sale on or before it
+async function findSale(plate,off){
+  const {data,error}=await sb.from("car_sales").select("id,plate,model,sale_date,dealer_id").eq("plate",plate).order("sale_date");
+  if(error)throw error;
+  if(!data.length)return null;
+  let pick=off?[...data].reverse().find(s=>s.sale_date<=off):data[data.length-1], before=false;
+  if(!pick){pick=data[0];before=true}
+  return {...pick,buyer:(state.dealers[pick.dealer_id]||{}).name||"",before,sales:data.length};
+}
+function dealerOf(t){return state.dealers[t.dealerId]||{name:t.dealer,phone:""}}
+
+// ---- stage logic: counted backwards from the double-fine date (fallback: due date)
+function stage(t){
+  if(t.status==="paid")return {k:"paid",label:"שולם",msg:null};
+  if(t.status==="dispute")return {k:"dispute",label:"במחלוקת – מוקפא",msg:null};
+  if(t.status==="ours")return {k:"ours",label:"לטיפול המגרש",msg:null};
+  const d=daysTo(t.doubleDate||t.dueDate); const sent=t.sent||{};
+  const check=d===2||d===0;
+  if(d===null)return {k:"new",label:"חסר מועד",msg:sent.intake?null:"intake",d};
+  if(d<0)return {k:"late",label:"עבר מועד הכפל",msg:null,d};
+  if(d<=1)return {k:"red",label:"דגל אדום",msg:sent.r1?null:"r1",d,check};
+  if(d<=3)return {k:"r3",label:"תזכורת שנייה",msg:sent.r3?null:"r3",d,check};
+  if(d<=5)return {k:"r5",label:"תזכורת ראשונה",msg:sent.r5?null:"r5",d};
+  return {k:sent.intake?"wait":"new",label:sent.intake?"ממתין":"נקלט – לשלוח הודעה",msg:sent.intake?null:"intake",d};
+}
+function needsAction(t){const s=stage(t);return s.msg||s.check||s.k==="red"||s.k==="late"}
+
+// ---- WhatsApp messages. Opening line is only "שלום {dealer}," (decision 04/11/2026)
+function message(t,kind){
+  const iss=state.issuerByName[t.issuer]||{};
+  const head=`שלום ${(t.dealer||"").trim()},`;
+  const car=`רכב ${plateFmt(t.plate)}${t.model?" ("+t.model+")":""}, שנמכר לכם בתאריך ${fmt(t.saleDate)}`;
+  const det=`פרטי הדוח:\n• גורם: ${t.issuer||"—"}\n• מספר דוח: ${t.ticketNo||"—"}\n• תאריך העבירה: ${fmt(t.offenseDate)}${t.offensePlace?"\n• מקום: "+t.offensePlace:""}\n• סכום: ${money(t.amount)}\n• לתשלום עד: ${fmt(t.dueDate)}`;
+  const after=t.amountAfter?`\nאחרי ${fmt(t.dueDate)} הסכום עולה ל־${money(t.amountAfter)}.`:"";
+  const pay=(t.payLink?`\nלתשלום באתר הרשמי:\n${t.payLink}`:"")+
+    (iss.pay_note&&t.ticketNo?`\n(${iss.pay_note}: ${t.ticketNo})`:"")+
+    (iss.pay_phone?`\nאפשר לשלם גם בטלפון: ${iss.pay_phone}`:"");
+  const dbl=t.doubleDate?fmt(t.doubleDate):fmt(t.dueDate);
+  const end=`\nאין צורך לשלוח לנו אישור – אנחנו נבדוק את הסטטוס בעצמנו.\nתודה רבה!`;
+  if(kind==="intake")return `${head}\nהגיע אלינו דוח על ${car}.\n\n${det}${after}${pay}\n\nחשוב לשלם עד ${dbl} כדי להימנע מכפל קנס.${end}`;
+  if(kind==="r5")return `${head}\nתזכורת ידידותית: הדוח על ${car} עדיין פתוח.\nבעוד 5 ימים (${dbl}) הסכום עלול להיות מוכפל.\n\n${det}${after}${pay}${end}`;
+  if(kind==="r3")return `${head}\nתזכורת שנייה: נשארו 3 ימים (עד ${dbl}) לתשלום הדוח על ${car} לפני כפל קנס.\n\n${det}${after}${pay}\n\nנשמח אם תסגרו את זה היום.${end}`;
+  return `${head}\nהדוח על ${car} עובר מחר (${dbl}) לכפל קנס.\nבבקשה לשלם עוד היום:${pay||"\n(קישור לתשלום לא הוזן)"}\n\nמספר דוח: ${t.ticketNo||"—"} | סכום: ${money(t.amount)}\nתודה!`;
+}
+const MSG_NAME={intake:"הודעת קליטה",r5:"תזכורת 5 ימים",r3:"תזכורת 3 ימים",r1:"הודעה דחופה – יום לפני"};
+
+// ---- rendering
+function card(t){
+  const s=stage(t), dl=dealerOf(t);
+  const d=s.d;
+  const daysTxt=(d===null||d===undefined||["paid","dispute","ours"].includes(s.k))?"":(d<0?`<span class="days" style="color:var(--red)">${-d} ימים באיחור</span>`:d===0?`<span class="days" style="color:var(--red)">היום!</span>`:`<span class="days">${d} ימים לכפל</span>`);
+  let note="";
+  if(s.k==="red")note=`<div class="note red">דגל אדום: מומלץ להתקשר עכשיו ל${esc(dl.name||"סוחר")}${dl.phone?` – <span dir="ltr">${esc(dl.phone)}</span>`:""}</div>`;
+  if(s.k==="late")note=`<div class="note red">מועד הכפל עבר ולא סומן תשלום. לבדוק באתר התשלום ולטפל מיד.</div>`;
+  if(s.check)note+=`<div class="note amber">היום בודקים אם הדוח שולם.</div>`;
+  if(t.offenseDate&&t.saleDate&&t.offenseDate<t.saleDate&&t.status!=="ours")note+=`<div class="note amber">שימו לב: העבירה (${fmt(t.offenseDate)}) קרתה לפני המכירה (${fmt(t.saleDate)}). כנראה שהדוח שייך למגרש.</div>`;
+  if(t.notes)note+=`<div class="note">${esc(t.notes)}</div>`;
+  const closed=["paid","dispute","ours"].includes(s.k);
+  const sentList=Object.keys(MSG_NAME).filter(k=>t.sent[k]).map(k=>`${MSG_NAME[k]} ${fmt(t.sent[k])}`).join(" · ");
+  return `<article class="card s-${s.k}" data-id="${esc(t.id)}">
+   <div class="row between">${plateHTML(t.plate)}<span class="row" style="gap:6px">${t.isSample?`<span class="sample">לדוגמה</span>`:""}<span class="pill p-${s.k}">${esc(s.label)}</span></span></div>
+   <div class="row between"><div class="who">${esc(t.dealer||"לא שויך")}</div>${daysTxt}</div>
+   <div class="meta"><span>${esc(t.issuer||"")}</span><span>סכום <b>${money(t.amount)}</b></span><span>כפל ב־<b>${fmt(t.doubleDate||t.dueDate)}</b></span><span>נמכר <b>${fmt(t.saleDate)}</b></span><span>התקבל <b>${fmt(t.receivedDate)}</b></span></div>
+   ${sentList?`<div class="sub">נשלח: ${esc(sentList)}</div>`:""}
+   ${note}
+   <div class="actions">
+    ${s.msg?`<button class="btn wa" data-act="msg" data-kind="${s.msg}" type="button">${MSG_NAME[s.msg]}</button>`:""}
+    ${!closed&&!s.msg?`<button class="btn small" data-act="msg" data-kind="${(d!==null&&d<=1)?"r1":"r5"}" type="button">הודעה נוספת</button>`:""}
+    ${t.payLink&&!closed?`<a class="btn small" href="${esc(t.payLink)}" target="_blank" rel="noopener">בדיקה באתר</a>`:""}
+    ${!closed?`<button class="btn small" data-act="paid" type="button">שולם ✓</button><button class="btn small ghost" data-act="dispute" type="button">מחלוקת</button>`:`<button class="btn small ghost" data-act="reopen" type="button">פתח מחדש</button>`}
+    <button class="btn small ghost" data-act="edit" type="button">עריכה</button>
+   </div></article>`;
+}
+function stats(){
+  const open=state.tickets.filter(t=>!["paid","dispute","ours"].includes(t.status||"open"));
+  const red=open.filter(t=>{const k=stage(t).k;return k==="red"||k==="late"});
+  const sum=open.reduce((a,t)=>a+(Number(t.amount)||0),0);
+  const m=todayISO().slice(0,7);
+  const paid=state.tickets.filter(t=>t.status==="paid"&&(t.closedAt||"").startsWith(m)).length;
+  const disp=state.tickets.filter(t=>t.status==="dispute").length;
+  return `<div class="panel" style="display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:10px">
+   <div><div class="sub">דוחות פתוחים כרגע</div><div style="font-family:var(--f-display);font-weight:800;font-size:44px;line-height:1;font-variant-numeric:tabular-nums">${open.length}</div></div>
+   <div style="text-align:left"><div class="sub">סכום פתוח</div><div style="font-family:var(--f-display);font-weight:700;font-size:22px">${money(sum)}</div></div></div>
+   <div class="stats">
+   <div class="stat ${red.length?"alert":""}"><b>${red.length}</b><span>דגל אדום / באיחור</span></div>
+   <div class="stat"><b>${open.length-red.length}</b><span>בתהליך תזכורות</span></div>
+   <div class="stat"><b>${disp}</b><span>במחלוקת</span></div>
+   <div class="stat"><b>${paid}</b><span>נסגרו החודש</span></div></div>`;
+}
+function sorted(list){return list.slice().sort((a,b)=>(daysTo(a.doubleDate||a.dueDate)??999)-(daysTo(b.doubleDate||b.dueDate)??999))}
+function viewToday(){
+  if(!state.ready)return `<div class="empty">טוען את הדוחות…</div>`;
+  const act=sorted(state.tickets.filter(needsAction));
+  return stats()+`<h2>לטיפול היום <span class="count">${act.length}</span></h2>`+
+   (act.length?`<div class="list">${act.map(card).join("")}</div>`:
+    `<div class="empty">אין משימות פתוחות להיום.<br>דוח חדש? לחצו על <b>+ דוח חדש</b> למטה.</div>`);
+}
+function viewAll(){
+  const F={open:"פתוחים",red:"דחופים",dispute:"מחלוקת",paid:"שולמו",all:"הכול"};
+  let l=state.tickets.filter(t=>{const k=stage(t).k;
+    if(state.filter==="open")return !["paid","dispute","ours"].includes(k);
+    if(state.filter==="red")return k==="red"||k==="late";
+    if(state.filter==="dispute")return k==="dispute"||k==="ours";
+    if(state.filter==="paid")return k==="paid";return true});
+  const q=state.q.trim();
+  if(q)l=l.filter(t=>normPlate(q)&&normPlate(t.plate).includes(normPlate(q))||(t.dealer||"").includes(q)||(t.ticketNo||"").includes(q));
+  return `<input class="search" id="q" type="search" placeholder="חיפוש לפי מספר רכב, סוחר או מספר דוח" value="${esc(state.q)}">
+   <div class="chips">${Object.entries(F).map(([k,v])=>`<button class="chip" data-filter="${k}" aria-pressed="${state.filter===k}" type="button">${v}</button>`).join("")}</div>
+   <h2>${F[state.filter]} <span class="count">${l.length}</span></h2>`+
+   (l.length?`<div class="list">${sorted(l).map(card).join("")}</div>`:`<div class="empty">אין דוחות ברשימה הזו.</div>`);
+}
+function viewAdd(t){
+  t=t||{};const iss=Object.values(state.issuers);
+  const curIss=t.issuerId||(iss[0]||{}).id;
+  return `<h2>${t.id?"עריכת דוח":"דוח חדש"}</h2><form class="panel" id="f" novalidate>
+   <input type="hidden" id="f_id" value="${esc(t.id||"")}">
+   <div class="field"><label for="f_plate">מספר רכב</label><input id="f_plate" inputmode="numeric" class="ltr" value="${esc(t.plate||"")}" required></div>
+   <div class="grid2">
+    <div class="field"><label for="f_off">תאריך העבירה</label><input id="f_off" type="date" value="${esc(t.offenseDate||"")}"></div>
+    <div class="field"><label for="f_time">שעה (לא חובה)</label><input id="f_time" type="time" value="${esc(t.offenseTime&&t.offenseTime!=="00:00"?t.offenseTime:"")}"></div>
+   </div>
+   <div id="matchBox"></div>
+   <div class="grid2">
+    <div class="field"><label for="f_issuer">גורם מוציא</label><select id="f_issuer">${iss.map(i=>`<option value="${i.id}" ${curIss===i.id?"selected":""}>${esc(i.name)}</option>`).join("")}</select></div>
+    <div class="field"><label for="f_no">מספר דוח / הודעה</label><input id="f_no" value="${esc(t.ticketNo||"")}"></div>
+    <div class="field"><label for="f_amt">סכום (₪)</label><input id="f_amt" inputmode="decimal" value="${esc(t.amount??"")}"></div>
+    <div class="field"><label for="f_due">לתשלום עד</label><input id="f_due" type="date" value="${esc(t.dueDate||"")}"></div>
+    <div class="field"><label for="f_after">סכום אחרי המועד (₪)</label><input id="f_after" inputmode="decimal" value="${esc(t.amountAfter??"")}"></div>
+    <div class="field"><label for="f_dbl">מועד כפל קנס</label><input id="f_dbl" type="date" value="${esc(t.doubleDate||"")}"><small>אם ריק: לפי "לתשלום עד". ממנו נספרות התזכורות.</small></div>
+   </div>
+   <div class="field"><label for="f_place">מקום העבירה (לא חובה)</label><input id="f_place" value="${esc(t.offensePlace||"")}"></div>
+   <div class="field"><label for="f_link">קישור לתשלום</label><input id="f_link" class="ltr" value="${esc(t.id?t.payLink:((state.issuers[curIss]||{}).pay_link||""))}" placeholder="https://"><small>נמלא אוטומטית לפי הגורם. אפשר להדביק קישור ישיר מהדוח.</small></div>
+   <details><summary class="sub">פרטים נוספים</summary><div class="grid2" style="margin-top:10px">
+    <div class="field"><label for="f_rcpt">מספר קבלה</label><input id="f_rcpt" value="${esc(t.receiptNo||"")}"></div>
+    <div class="field"><label for="f_notice">תאריך ההודעה (מודפס על הדוח)</label><input id="f_notice" type="date" value="${esc(t.noticeDate||"")}"></div>
+   </div></details>
+   <div class="field"><label for="f_notes">הערות</label><textarea id="f_notes">${esc(t.notes||"")}</textarea></div>
+   ${t.id?`<div class="sub">התקבל במערכת: ${fmt(t.receivedDate)}</div>`:`<div class="sub">תאריך הקבלה יירשם אוטומטית: היום, ${fmt(todayISO())}</div>`}
+   <div class="row"><button class="btn primary" type="submit">שמירה</button><button class="btn ghost" type="button" data-tab="today">ביטול</button>
+   ${t.id?`<button class="btn ghost" type="button" id="delBtn" style="color:var(--red);margin-inline-start:auto">מחיקה</button>`:""}</div>
+  </form>`;
+}
+function viewSettings(){
+  const iss=Object.values(state.issuers);
+  return `<h2>גורמים מוציאים וקישורי תשלום</h2><div class="panel">
+   ${iss.map(i=>`<form class="issuer" data-issuer="${i.id}">
+     <div class="field"><label>שם</label><input name="name" value="${esc(i.name)}"></div>
+     <div class="field"><label>קישור לתשלום</label><input name="pay_link" class="ltr" value="${esc(i.pay_link||"")}" placeholder="https://"></div>
+     <div class="grid2"><div class="field"><label>טלפון לתשלום</label><input name="pay_phone" class="ltr" value="${esc(i.pay_phone||"")}"></div>
+     <div class="field"><label>שורה נוספת בהודעה</label><input name="pay_note" value="${esc(i.pay_note||"")}"><small>למשל: "באתר מחפשים לפי מספר ההודעה". מספר הדוח יתווסף אוטומטית.</small></div></div>
+     <div><button class="btn small" type="submit">שמירה</button></div></form>`).join("")}
+   <div style="padding-top:12px"><button class="btn small" id="addIssuer" type="button">+ גורם חדש</button></div></div>
+   <h2>איך זה עובד</h2><div class="panel" style="display:flex;flex-direction:column;gap:8px;font-size:15px">
+   <div>• מזינים דוח. המערכת מוצאת לבד למי נמכר הרכב ביום העבירה, לפי רשימת המכירות.</div>
+   <div>• רכב שלא נמצא? המערכת שואלת מי הלקוח ושומרת את התשובה לפעם הבאה.</div>
+   <div>• כפתור הוואטסאפ מעתיק את ההודעה ופותח את וואטסאפ. בוחרים את איש הקשר ושולחים.</div>
+   <div>• אחרי השליחה לוחצים "סמן כנשלח". כל שלב נרשם פעם אחת.</div>
+   <div>• תזכורות: 5 ו־3 ימים לפני הכפל. יום לפני: דגל אדום והמלצה להתקשר. יומיים לפני וביום עצמו: בדיקה אם שולם.</div>
+   <div>• "מחלוקת" מקפיאה את התזכורות לדוח עד שפותחים אותו מחדש.</div>
+   <div>• "ייצוא לגיליון" מעתיק את כל הדוחות, להדבקה בגוגל שיטס.</div></div>
+   <h2>חשבון</h2><div class="panel row between"><span>${esc(state.user?.email||"")}</span><button class="btn small ghost" id="signOut" type="button">יציאה</button></div>`;
+}
+function viewLogin(){
+  if(state.mode==="setpw")return `<div class="login"><h2>בחירת סיסמה</h2><form class="panel" id="pwForm">
+    <div class="field"><label for="pw1">סיסמה חדשה (לפחות 8 תווים)</label><input id="pw1" type="password" autocomplete="new-password" minlength="8" required></div>
+    <div class="field"><label for="pw2">שוב, לאימות</label><input id="pw2" type="password" autocomplete="new-password" required></div>
+    <button class="btn primary" type="submit">שמירת הסיסמה</button></form></div>`;
+  return `<div class="login"><h2>כניסה</h2><form class="panel" id="loginForm">
+    <div class="field"><label for="em">מייל</label><input id="em" type="email" class="ltr" autocomplete="username" required></div>
+    <div class="field"><label for="pw">סיסמה</label><input id="pw" type="password" autocomplete="current-password" required></div>
+    <button class="btn primary" type="submit">כניסה</button>
+    <button class="btn ghost small" id="forgot" type="button">שכחתי סיסמה</button></form>
+    <div class="sub" style="margin-top:10px">הכניסה רק למי שהוזמן/ה למערכת.</div></div>`;
+}
+function render(){
+  const v=$("#view");
+  document.body.classList.toggle("signed-out",!state.user||state.mode==="setpw");
+  if(!state.user||state.mode==="setpw"){v.innerHTML=viewLogin();return}
+  if(state.tab==="today")v.innerHTML=viewToday();
+  else if(state.tab==="all")v.innerHTML=viewAll();
+  else if(state.tab==="add"){v.innerHTML=viewAdd(state.editing);state.match=null;state.matchFor="";showMatch();}
+  else v.innerHTML=viewSettings();
+  document.querySelectorAll("nav.tabs button").forEach(b=>b.setAttribute("aria-current",b.dataset.tab===state.tab?"page":"false"));
+}
+function go(tab){if(tab!=="add")state.editing=null;if(tab!==state.tab)state.q="";state.tab=tab;render();window.scrollTo(0,0)}
+
+// ---- car lookup in the add form
+let matchTimer,matchSeq=0;
+function showMatch(){clearTimeout(matchTimer);matchTimer=setTimeout(doMatch,250)}
+async function doMatch(){
+  const box=$("#matchBox");if(!box)return;const p=normPlate($("#f_plate").value);const off=$("#f_off").value;
+  if(p.length<7){box.innerHTML="";state.match=null;state.matchFor="";return}
+  const key=p+"|"+off;if(key===state.matchFor&&box.innerHTML)return;
+  const seq=++matchSeq;box.innerHTML=`<div class="match ok">מחפש…</div>`;
+  let m;try{m=await findSale(p,off)}catch(e){box.innerHTML=`<div class="match warn">החיפוש נכשל: ${esc(errText(e))}</div>`;return}
+  if(seq!==matchSeq)return;
+  state.match=m;state.matchFor=key;
+  if(m){
+    box.innerHTML=`<div class="match ${m.before?"warn":"ok"}">נמכר ל<b>${esc(m.buyer)}</b> בתאריך ${fmt(m.sale_date)}${m.model?` · ${esc(m.model)}`:""}${m.sales>1?`<br>הרכב נמכר ${m.sales} פעמים. נבחר מי שהחזיק בו ביום העבירה.`:""}${m.before?"<br>העבירה קרתה לפני המכירה – כנראה שהדוח שלנו.":""}${!off?"<br><small>הזינו תאריך עבירה כדי לוודא את השיוך.</small>":""}</div>`;
+  }else{
+    box.innerHTML=`<div class="match miss"><b>לא נמצא לקוח רשום לרכב מספר ${esc(plateFmt(p))}. מי הלקוח?</b>
+     <div class="grid2" style="margin-top:8px"><div class="field"><label for="o_name">שם הקונה / הסוחר</label><input id="o_name" list="dealerList"></div>
+     <div class="field"><label for="o_date">תאריך מכירה</label><input id="o_date" type="date"></div></div>
+     <datalist id="dealerList">${Object.values(state.dealers).map(d=>`<option value="${esc(d.name)}">`).join("")}</datalist>
+     <small>התשובה תישמר לרכב הזה לפעם הבאה.</small></div>`;
+  }
+}
+
+// ---- WhatsApp sheet: no phone number; Daniela picks the contact in WhatsApp
+function openMsg(t,kind){
+  const txt=message(t,kind), dl=dealerOf(t);
+  const url=`https://wa.me/?text=${encodeURIComponent(txt)}`;
+  const already=t.sent[kind];
+  $("#sheetHost").innerHTML=`<div class="sheet" id="sh"><div role="dialog" aria-label="${MSG_NAME[kind]}">
+   <div class="row between"><b style="font-family:var(--f-display);font-size:17px">${MSG_NAME[kind]}</b><button class="btn small ghost" data-close type="button">סגירה</button></div>
+   <div class="sub">אל: ${esc(dl.name||"—")}${dl.phone?` · <span dir="ltr">${esc(dl.phone)}</span>`:""}</div>
+   ${kind==="r1"?`<div class="note red">דגל אדום: מומלץ להתקשר עכשיו לסוחר, ואחר כך לשלוח את ההודעה.</div>`:""}
+   <div class="msg" id="msgText">${esc(txt)}</div>
+   <div class="actions"><a class="btn wa" href="${esc(url)}" target="_blank" rel="noopener" id="waGo">העתקה ופתיחה בוואטסאפ</a>
+   <button class="btn" id="copyBtn" type="button">העתקה בלבד</button>
+   ${already?"":`<button class="btn primary" id="markSent" type="button">סמן כנשלח</button>`}</div>
+   <div class="sub">${already?`השלב הזה כבר סומן כנשלח ב־${fmt(already)}.`:`בוואטסאפ בוחרים את ${esc(dl.name||"הסוחר")} ושולחים. אחר כך לוחצים "סמן כנשלח".`}</div></div></div>`;
+  $("#sh").addEventListener("click",e=>{if(e.target.id==="sh"||e.target.closest("[data-close]"))closeSheet()});
+  const copy=()=>navigator.clipboard?.writeText(txt).then(()=>toast("ההודעה הועתקה"),()=>{selectText($("#msgText"));toast("סמנו והעתיקו ידנית")});
+  $("#copyBtn").onclick=copy;$("#waGo").addEventListener("click",copy);
+  const ms=$("#markSent");if(ms)ms.onclick=async()=>{ms.disabled=true;
+    const {error}=await sb.from("message_log").insert({ticket_id:t.id,kind,sent_by:state.user.id});
+    if(error&&error.code!=="23505"){ms.disabled=false;return toast("השמירה נכשלה: "+errText(error))}
+    closeSheet();toast(error?"השלב הזה כבר היה רשום":"סומן כנשלח");await refresh();render()};
+}
+function selectText(el){const r=document.createRange();r.selectNodeContents(el);const s=getSelection();s.removeAllRanges();s.addRange(r)}
+function closeSheet(){$("#sheetHost").innerHTML=""}
+function confirmSheet(text,okLabel,fn){
+  $("#sheetHost").innerHTML=`<div class="sheet" id="sh"><div><b>${esc(text)}</b><div class="actions"><button class="btn primary" id="ok" type="button">${esc(okLabel)}</button><button class="btn ghost" data-close type="button">ביטול</button></div></div></div>`;
+  $("#sh").addEventListener("click",e=>{if(e.target.id==="sh"||e.target.closest("[data-close]"))closeSheet()});
+  $("#ok").onclick=async()=>{closeSheet();await fn()};
+}
+let toastT;function toast(m){let el=$(".toast");if(!el){el=document.createElement("div");el.className="toast";el.setAttribute("role","status");document.body.appendChild(el)}el.textContent=m;clearTimeout(toastT);toastT=setTimeout(()=>el.remove(),2600)}
+
+// ---- writes
+async function saveTicket(id,patch){
+  const {error}=await sb.from("tickets").update(patch).eq("id",id);
+  if(error){toast("השמירה נכשלה: "+errText(error));return false}
+  await refresh();render();return true;
+}
+async function dealerIdFor(name){
+  if(state.dealerByName[name])return state.dealerByName[name].id;
+  const {data,error}=await sb.from("dealers").upsert({name},{onConflict:"name"}).select("id").single();
+  if(error)throw error;return data.id;
+}
+
+// ---- events
+document.addEventListener("click",async e=>{
+  const tabB=e.target.closest("[data-tab]");if(tabB&&(!e.target.closest("form")||tabB.type==="button")){go(tabB.dataset.tab);return}
+  const fb=e.target.closest("[data-filter]");if(fb){state.filter=fb.dataset.filter;render();return}
+  if(e.target.id==="signOut"){await sb.auth.signOut();return}
+  if(e.target.id==="forgot"){const em=$("#em").value.trim();if(!em)return toast("כתבו קודם את המייל");
+    const {error}=await sb.auth.resetPasswordForEmail(em,{redirectTo:location.origin+location.pathname});
+    toast(error?"השליחה נכשלה: "+errText(error):"נשלח מייל לאיפוס הסיסמה");return}
+  if(e.target.id==="addIssuer"){const {error}=await sb.from("issuers").insert({name:"גורם חדש "+(Object.keys(state.issuers).length+1)});
+    if(error)return toast("ההוספה נכשלה: "+errText(error));await refresh();render();return}
+  if(e.target.id==="delBtn"){const id=$("#f_id").value;
+    confirmSheet("למחוק את הדוח לצמיתות?","מחיקה",async()=>{const {error}=await sb.from("tickets").delete().eq("id",id);
+      if(error)return toast("המחיקה נכשלה: "+errText(error));toast("נמחק");await refresh();go("all")});return}
+  const a=e.target.closest("[data-act]");if(!a)return;
+  const id=a.closest(".card").dataset.id;const t=state.tickets.find(x=>x.id===id);if(!t)return;
+  const act=a.dataset.act;
+  if(act==="msg")openMsg(t,a.dataset.kind);
+  if(act==="paid")confirmSheet(`לסמן שהדוח לרכב ${plateFmt(t.plate)} שולם?`,"כן, שולם",async()=>{if(await saveTicket(id,{status:"paid",closed_at:new Date().toISOString()}))toast("נסגר בהצלחה")});
+  if(act==="dispute")confirmSheet(`להעביר למחלוקת ולהקפיא תזכורות?`,"העבר למחלוקת",async()=>{if(await saveTicket(id,{status:"dispute"}))toast("הועבר לטיפול ידני")});
+  if(act==="reopen"){if(await saveTicket(id,{status:"open",closed_at:null}))toast("נפתח מחדש")}
+  if(act==="edit"){state.editing=t;state.tab="add";render();window.scrollTo(0,0)}
+});
+document.addEventListener("input",e=>{
+  if(e.target.id==="q"){state.q=e.target.value;const pos=e.target.selectionStart;render();const q=$("#q");q.focus();q.setSelectionRange(pos,pos)}
+  if(e.target.id==="f_plate"||e.target.id==="f_off")showMatch();
+});
+document.addEventListener("change",e=>{
+  if(e.target.id==="f_issuer"){const l=$("#f_link");const urls=Object.values(state.issuers).map(i=>i.pay_link||"");
+    if(!l.value||urls.includes(l.value))l.value=(state.issuers[e.target.value]||{}).pay_link||""}
+});
+document.addEventListener("submit",async e=>{
+  e.preventDefault();const f=e.target;
+  if(f.id==="loginForm"){const {error}=await sb.auth.signInWithPassword({email:$("#em").value.trim(),password:$("#pw").value});
+    if(error)toast(error.message==="Invalid login credentials"?"מייל או סיסמה שגויים":"הכניסה נכשלה: "+errText(error));return}
+  if(f.id==="pwForm"){const p1=$("#pw1").value,p2=$("#pw2").value;
+    if(p1.length<8)return toast("הסיסמה קצרה מדי");if(p1!==p2)return toast("הסיסמאות לא זהות");
+    const {error}=await sb.auth.updateUser({password:p1});if(error)return toast("השמירה נכשלה: "+errText(error));
+    history.replaceState(null,"",location.pathname);state.mode="app";toast("הסיסמה נשמרה");await refresh();render();return}
+  if(f.dataset.issuer){const fd=new FormData(f);const patch={};for(const k of ["name","pay_link","pay_phone","pay_note"])patch[k]=(fd.get(k)||"").trim()||null;
+    if(!patch.name)return toast("חסר שם");
+    const {error}=await sb.from("issuers").update(patch).eq("id",f.dataset.issuer);
+    if(error)return toast("השמירה נכשלה: "+errText(error));toast("נשמר");await refresh();return}
+  if(f.id!=="f"||state.busy)return;
+  const plate=normPlate($("#f_plate").value);if(plate.length<7)return toast("מספר רכב לא תקין");
+  const off=$("#f_off").value;
+  state.busy=true;
+  try{
+    if(state.matchFor!==plate+"|"+off){state.matchFor="";await doMatch()}
+    let m=state.match;
+    if(!m){const n=$("#o_name")?.value.trim(),sd=$("#o_date")?.value;
+      if(!n)return toast("צריך לכתוב מי הלקוח של הרכב");if(!sd)return toast("צריך תאריך מכירה");
+      const dealer_id=await dealerIdFor(n);
+      const {data,error}=await sb.from("car_sales").insert({plate,sale_date:sd,dealer_id,buyer_raw:n,source:"manual"}).select("id,plate,model,sale_date,dealer_id").single();
+      if(error)throw error;
+      m={...data,buyer:n,before:off?off<sd:false};await load();
+    }
+    const time=$("#f_time").value;
+    const num=v=>{const x=Number(String(v).replace(/[^\d.]/g,""));return v&&isFinite(x)?x:null};
+    const data={plate,sale_id:m.id,dealer_id:m.dealer_id,issuer_id:Number($("#f_issuer").value),
+      ticket_no:$("#f_no").value.trim()||null,receipt_no:$("#f_rcpt").value.trim()||null,
+      offense_at:off?`${off}T${time||"00:00"}:00`:null,offense_place:$("#f_place").value.trim()||null,
+      notice_date:$("#f_notice").value||null,amount:num($("#f_amt").value),amount_after:num($("#f_after").value),
+      due_date:$("#f_due").value||null,double_date:$("#f_dbl").value||$("#f_due").value||null,
+      pay_link:$("#f_link").value.trim()||null,notes:$("#f_notes").value.trim()||null};
+    const id=$("#f_id").value;let error;
+    if(id)({error}=await sb.from("tickets").update(data).eq("id",id));
+    else({error}=await sb.from("tickets").insert({...data,status:m.before?"ours":"open",created_by:state.user.id}));
+    if(error)throw error;
+    toast(id?"הדוח עודכן":"הדוח נשמר");state.editing=null;await refresh();go("today");
+  }catch(err){toast("השמירה נכשלה: "+errText(err))}
+  finally{state.busy=false}
+});
+
+// ---- export (CSV to clipboard, opens in Google Sheets)
+$("#exportBtn").onclick=async()=>{
+  const cols=[["plate","מספר רכב"],["dealer","נמכר ל"],["saleDate","תאריך מכירה"],["issuer","גורם"],["ticketNo","מספר דוח"],["offenseDate","תאריך עבירה"],["receivedDate","התקבל"],["amount","סכום"],["dueDate","לתשלום עד"],["doubleDate","מועד כפל"],["status","סטטוס"],["notes","הערות"]];
+  const ST={open:"פתוח",paid:"שולם",dispute:"מחלוקת",ours:"של המגרש"};
+  const q=v=>`"${String(v??"").replace(/"/g,'""')}"`;
+  const csv="﻿"+[cols.map(c=>q(c[1])).join(","),...state.tickets.map(t=>cols.map(([k])=>q(k==="status"?ST[t.status]||t.status:t[k])).join(","))].join("\n");
+  try{await navigator.clipboard.writeText(csv);toast("הועתק. הדביקו ב־Google Sheets")}catch(err){toast("ההעתקה לא הצליחה")}
+};
+
+// ---- boot
+$("#today").textContent=new Date().toLocaleDateString("he-IL",{weekday:"long",day:"numeric",month:"long",year:"numeric"});
+if(/type=(invite|recovery)/.test(START_HASH))state.mode="setpw";
+sb.auth.onAuthStateChange((ev,session)=>{
+  if(ev==="PASSWORD_RECOVERY")state.mode="setpw";
+  const was=state.user?.id;state.user=session?.user||null;
+  if(!state.user){state.ready=false;state.tickets=[];$("#conn").textContent="";if(state.mode!=="setpw")state.mode="login";render();return}
+  if(state.mode==="login")state.mode="app";
+  if(was!==state.user.id)setTimeout(async()=>{render();await refresh();render()},0);
+});
+setInterval(refresh,60000);
+document.addEventListener("visibilitychange",()=>{if(!document.hidden)refresh()});
+})();
+</script>
+</body>
+</html>
