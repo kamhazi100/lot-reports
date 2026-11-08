@@ -77,6 +77,11 @@ h2 .count{font-family:var(--f-body);font-size:13px;color:var(--muted);font-weigh
 .p-paid{background:var(--green-bg);color:var(--green)}
 .p-new,.p-wait,.p-dispute,.p-ours{background:var(--grey-bg);color:var(--muted)}
 .p-review{background:var(--accent);color:var(--accent-fg)}
+.p-other{background:var(--grey-bg);color:var(--fg)}
+.p-blate{background:var(--red-bg);color:var(--red)}
+.card.s-blate{border-inline-start-color:var(--red)}
+.card.s-other{border-inline-start-color:var(--accent)}
+.binder{font-family:var(--f-display);font-weight:700;font-size:14px;padding:3px 10px;border-radius:6px;border:2px dashed var(--muted);color:var(--fg)}
 .sample{font-size:12px;font-weight:700;padding:2px 8px;border-radius:999px;background:var(--grey-bg);color:var(--muted)}
 .days{font-family:var(--f-display);font-weight:800;font-variant-numeric:tabular-nums}
 .note{font-size:14px;background:var(--surface-2);border-radius:8px;padding:8px 10px}
@@ -189,7 +194,8 @@ function fromRow(r){
     payLink:r.pay_link||"",status:r.status,notes:r.notes||"",isSample:r.is_sample,createdAt:r.created_at,closedAt:r.closed_at,sent,
     source:r.source,reviewNeeded:r.review_needed,emailFrom:r.email_from||"",emailSubject:r.email_subject||"",
     emailReceivedAt:r.email_received_at,fileUrl:r.file_url||"",extractRaw:r.extract_raw,
-    delivered,reviewReason:r.review_reason||"",instCustomer:r.inst_customer||"",instSaleDate:r.inst_sale_date||""};
+    delivered,reviewReason:r.review_reason||"",instCustomer:r.inst_customer||"",instSaleDate:r.inst_sale_date||"",
+    binderRow:r.binder_row,binderName:r.binder_name||"",binderNote:r.binder_note||""};
 }
 async function load(){
   const [d,i]=await Promise.all([sb.from("dealers").select("id,name,phone").order("name"),sb.from("issuers").select("*").order("id")]);
@@ -224,7 +230,15 @@ function stage(t){
   if(t.status==="paid")return {k:"paid",label:"שולם",msg:null};
   if(t.status==="dispute")return {k:"dispute",label:"במחלוקת – מוקפא",msg:null};
   if(t.status==="ours")return {k:"ours",label:"לטיפול המגרש",msg:null};
+  if(OTHER_STATUS[t.status])return {k:"other",label:OTHER_STATUS[t.status],msg:null};
   const d=daysTo(t.doubleDate||t.dueDate); const sent=t.sent||{};
+  if(t.source==="binder"){  // binder: reminders a week and two days before only; no intake, no late alert
+    if(d===null)return {k:"wait",label:"פתוח",msg:null,d};
+    if(d<0)return {k:"blate",label:"באיחור",msg:null,d};
+    if(d<=2)return {k:"r3",label:"קלסר – יומיים לפני",msg:sent.b2?null:"b2",d};
+    if(d<=7)return {k:"r5",label:"קלסר – שבוע לפני",msg:sent.b7?null:"b7",d};
+    return {k:"wait",label:"פתוח",msg:null,d};
+  }
   const check=d===2||d===0;
   if(d===null)return {k:"new",label:"חסר מועד",msg:sent.intake?null:"intake",d};
   if(d<0)return {k:"late",label:"עבר מועד הכפל",msg:null,d};
@@ -240,7 +254,8 @@ async function message(t,kind){
   const {data,error}=await sb.rpc("ticket_message",{p_ticket:t.id,p_kind:kind});
   if(error)throw error;return data||"";
 }
-const MSG_NAME={intake:"הודעת קליטה",r5:"תזכורת 5 ימים",r3:"תזכורת 3 ימים",r1:"הודעה דחופה – יום לפני"};
+const MSG_NAME={intake:"הודעת קליטה",r5:"תזכורת 5 ימים",r3:"תזכורת 3 ימים",r1:"הודעה דחופה – יום לפני",b7:"תזכורת קלסר – שבוע לפני",b2:"תזכורת קלסר – יומיים לפני"};
+const OTHER_STATUS={pending_transfer:"ממתין להסבה",lot_paid:"המגרש שילם – לגבות מהלקוח",client_handling:"בטיפול הלקוח",legal:"בטיפול משפטי"};
 
 // ---- rendering
 function reviewCard(t){
@@ -275,36 +290,39 @@ function card(t){
   if(t.reviewNeeded)return reviewCard(t);
   const s=stage(t), dl=dealerOf(t);
   const d=s.d;
-  const daysTxt=(d===null||d===undefined||["paid","dispute","ours"].includes(s.k))?"":(d<0?`<span class="days" style="color:var(--red)">${-d} ימים באיחור</span>`:d===0?`<span class="days" style="color:var(--red)">היום!</span>`:`<span class="days">${d} ימים לכפל</span>`);
+  const isBinder=t.source==="binder";
+  const daysTxt=(d===null||d===undefined||["paid","dispute","ours","other"].includes(s.k))?"":(d<0?`<span class="days" style="color:var(--red)">${-d} ימים באיחור</span>`:d===0?`<span class="days" style="color:var(--red)">היום!</span>`:`<span class="days">${d} ימים לכפל</span>`);
   let note="";
   if(s.k==="red")note=`<div class="note red">דגל אדום: מומלץ להתקשר עכשיו ל${esc(dl.name||"סוחר")}${dl.phone?` – <span dir="ltr">${esc(dl.phone)}</span>`:""}</div>`;
   if(s.k==="late")note=`<div class="note red">מועד הכפל עבר ולא סומן תשלום. לבדוק באתר התשלום ולטפל מיד.</div>`;
   if(s.check)note+=`<div class="note amber">היום בודקים אם הדוח שולם.</div>`;
   if(t.offenseDate&&t.saleDate&&t.offenseDate<t.saleDate&&t.status!=="ours")note+=`<div class="note amber">שימו לב: העבירה (${fmt(t.offenseDate)}) קרתה לפני המכירה (${fmt(t.saleDate)}). כנראה שהדוח שייך למגרש.</div>`;
   if(t.notes)note+=`<div class="note">${esc(t.notes)}</div>`;
+  if(t.binderNote)note+=`<div class="note">מהקלסר: ${esc(t.binderNote)}</div>`;
   const closed=["paid","dispute","ours"].includes(s.k);
+  const canMsg=t.status==="open"&&!closed;
   const sentList=Object.keys(MSG_NAME).filter(k=>t.sent[k]).map(k=>`${MSG_NAME[k]} ${fmt(t.sent[k])}`).join(" · ");
   const delList=Object.keys(MSG_NAME).filter(k=>t.delivered[k]).map(k=>`${MSG_NAME[k]} ${fmt(t.delivered[k])}`).join(" · ");
   const noLink=!t.payLink&&!(state.issuers[t.issuerId]||{}).pay_link;
-  if(noLink&&!closed)note+=`<div class="note amber">חסר קישור לתשלום. צריך להשלים בעריכה (או בהגדרות של הגורם) לפני שליחה.</div>`;
+  if(noLink&&canMsg&&!isBinder)note+=`<div class="note amber">חסר קישור לתשלום. צריך להשלים בעריכה (או בהגדרות של הגורם) לפני שליחה.</div>`;
   return `<article class="card s-${s.k}" data-id="${esc(t.id)}">
-   <div class="row between">${plateHTML(t.plate)}<span class="row" style="gap:6px">${t.isSample?`<span class="sample">לדוגמה</span>`:""}<span class="pill p-${s.k}">${esc(s.label)}</span></span></div>
+   <div class="row between">${isBinder&&!t.plate?`<span class="binder">קלסר · שורה ${esc(t.binderRow)}</span>`:plateHTML(t.plate)}<span class="row" style="gap:6px">${isBinder&&t.plate?`<span class="binder">קלסר</span>`:""}${t.isSample?`<span class="sample">לדוגמה</span>`:""}<span class="pill p-${s.k}">${esc(s.label)}</span></span></div>
    <div class="row between"><div class="who">${esc(t.dealer||"לא שויך")}</div>${daysTxt}</div>
-   <div class="meta"><span>${esc(t.issuer||"")}</span><span>סכום <b>${money(t.amount)}</b></span><span>כפל ב־<b>${fmt(t.doubleDate||t.dueDate)}</b></span><span>נמכר <b>${fmt(t.saleDate)}</b></span><span>התקבל <b>${fmt(t.receivedDate)}</b></span></div>
+   <div class="meta">${t.issuer?`<span>${esc(t.issuer)}</span>`:""}<span>סכום <b>${money(t.amount)}</b></span><span>כפל ב־<b>${fmt(t.doubleDate||t.dueDate)}</b></span>${t.saleDate?`<span>נמכר <b>${fmt(t.saleDate)}</b></span>`:""}<span>התקבל <b>${fmt(t.receivedDate)}</b></span></div>
    ${delList?`<div class="sub">נמסר לאינסט: ${esc(delList)}</div>`:""}
    ${sentList?`<div class="sub">נשלח לסוחר: ${esc(sentList)}</div>`:""}
    ${note}
    <div class="actions">
     ${s.msg?`<button class="btn wa" data-act="msg" data-kind="${s.msg}" type="button">${MSG_NAME[s.msg]}</button>`:""}
-    ${!closed&&!s.msg?`<button class="btn small" data-act="msg" data-kind="${(d!==null&&d<=1)?"r1":"r5"}" type="button">הודעה נוספת</button>`:""}
+    ${canMsg&&!s.msg?`<button class="btn small" data-act="msg" data-kind="${isBinder?"b7":(d!==null&&d<=1)?"r1":"r5"}" type="button">הודעה נוספת</button>`:""}
     ${t.payLink&&!closed?`<a class="btn small" href="${esc(t.payLink)}" target="_blank" rel="noopener">בדיקה באתר</a>`:""}
     ${!closed?`<button class="btn small" data-act="paid" type="button">שולם ✓</button><button class="btn small ghost" data-act="dispute" type="button">מחלוקת</button>`:`<button class="btn small ghost" data-act="reopen" type="button">פתח מחדש</button>`}
     <button class="btn small ghost" data-act="edit" type="button">עריכה</button>
    </div></article>`;
 }
 function stats(){
-  const open=state.tickets.filter(t=>!["paid","dispute","ours"].includes(t.status||"open"));
-  const red=open.filter(t=>{const k=stage(t).k;return k==="red"||k==="late"});
+  const open=state.tickets.filter(t=>(t.status||"open")==="open");
+  const red=open.filter(t=>{const k=stage(t).k;return k==="red"||k==="late"||k==="blate"});
   const sum=open.reduce((a,t)=>a+(Number(t.amount)||0),0);
   const m=todayISO().slice(0,7);
   const paid=state.tickets.filter(t=>t.status==="paid"&&(t.closedAt||"").startsWith(m)).length;
@@ -329,17 +347,19 @@ function viewToday(){
     `<div class="empty">אין משימות פתוחות להיום.<br>דוח חדש? לחצו על <b>+ דוח חדש</b> למטה.</div>`);
 }
 function viewAll(){
-  const F={open:"פתוחים",review:"לבדיקה",red:"דחופים",dispute:"מחלוקת",paid:"שולמו",all:"הכול"};
+  const F={open:"פתוחים",review:"לבדיקה",red:"דחופים",other:"בטיפול / הסבה / לגבות",binder:"קלסר",dispute:"מחלוקת",paid:"שולמו",all:"הכול"};
   let l=state.tickets.filter(t=>{const k=stage(t).k;
     if(state.filter==="review")return k==="review";
-    if(state.filter==="open")return !["paid","dispute","ours"].includes(k);
-    if(state.filter==="red")return k==="red"||k==="late";
+    if(state.filter==="open")return t.status==="open";
+    if(state.filter==="other")return k==="other";
+    if(state.filter==="binder")return t.source==="binder";
+    if(state.filter==="red")return k==="red"||k==="late"||k==="blate";
     if(state.filter==="dispute")return k==="dispute"||k==="ours";
     if(state.filter==="paid")return k==="paid";return true});
   if(state.customer)l=l.filter(t=>String(t.dealerId)===state.customer);
   const custs=[...new Map(state.tickets.filter(t=>t.dealerId).map(t=>[String(t.dealerId),t.dealer])).entries()].sort((a,b)=>a[1].localeCompare(b[1],"he"));
   const q=state.q.trim();
-  if(q)l=l.filter(t=>normPlate(q)&&normPlate(t.plate).includes(normPlate(q))||(t.dealer||"").includes(q)||(t.ticketNo||"").includes(q));
+  if(q)l=l.filter(t=>normPlate(q)&&normPlate(t.plate).includes(normPlate(q))||(t.dealer||"").includes(q)||(t.ticketNo||"").includes(q)||(t.binderName||"").includes(q));
   return `<input class="search" id="q" type="search" placeholder="חיפוש לפי מספר רכב, סוחר או מספר דוח" value="${esc(state.q)}">
    <div class="field" style="margin-bottom:10px"><label for="custSel">לקוח</label><select id="custSel"><option value="">כל הלקוחות</option>${custs.map(([id,n])=>`<option value="${esc(id)}" ${state.customer===id?"selected":""}>${esc(n)}</option>`).join("")}</select></div>
    <div class="chips">${Object.entries(F).map(([k,v])=>`<button class="chip" data-filter="${k}" aria-pressed="${state.filter===k}" type="button">${v}</button>`).join("")}</div>
@@ -348,19 +368,23 @@ function viewAll(){
 }
 function viewAdd(t){
   t=t||{};const iss=Object.values(state.issuers);
-  const curIss=t.issuerId||(iss[0]||{}).id;
+  const isBinder=t.source==="binder";
+  const curIss=t.issuerId||(isBinder?"":(iss[0]||{}).id);
+  const STATUS_OPT={open:"פתוח",paid:"שולם",dispute:"במחלוקת",ours:"של המגרש",...OTHER_STATUS};
   return `<h2>${t.reviewNeeded?"בדיקת דוח שהגיע במייל":t.id?"עריכת דוח":"דוח חדש"}</h2><form class="panel" id="f" novalidate>
    <input type="hidden" id="f_id" value="${esc(t.id||"")}">
    ${t.reviewNeeded?`<div class="note amber">הפרטים נקראו אוטומטית מהמייל. בודקים כל שדה מול הדוח המקורי, משלימים מה שחסר ולוחצים "אישור הדוח".
      ${t.fileUrl?`<div style="margin-top:8px"><a class="btn small" href="${esc(t.fileUrl)}" target="_blank" rel="noopener">פתיחת הדוח המקורי</a></div>`:""}</div>`:""}
-   <div class="field"><label for="f_plate">מספר רכב</label><input id="f_plate" inputmode="numeric" class="ltr" value="${esc(t.plate||"")}" required></div>
+   ${isBinder?`<div class="note">דוח מהקלסר, שורה ${esc(t.binderRow)}${t.binderName?` (בקלסר: ${esc(t.binderName)})`:""} · לקוח: <b>${esc(t.dealer)}</b>${t.binderNote?`<br>הערה מהקלסר: ${esc(t.binderNote)}`:""}<br><small>מספר רכב לא חובה בדוח קלסר. אם מוסיפים אותו, המערכת תבדוק למי נמכר הרכב.</small></div>`:""}
+   <div class="field"><label for="f_plate">מספר רכב${isBinder?" (לא חובה)":""}</label><input id="f_plate" inputmode="numeric" class="ltr" value="${esc(t.plate||"")}" ${isBinder?"":"required"}></div>
+   ${t.id&&!t.reviewNeeded?`<div class="field"><label for="f_status">סטטוס</label><select id="f_status">${Object.entries(STATUS_OPT).map(([k,v])=>`<option value="${k}" ${t.status===k?"selected":""}>${v}</option>`).join("")}</select></div>`:""}
    <div class="grid2">
     <div class="field"><label for="f_off">תאריך העבירה</label><input id="f_off" type="date" value="${esc(t.offenseDate||"")}"></div>
     <div class="field"><label for="f_time">שעה (לא חובה)</label><input id="f_time" type="time" value="${esc(t.offenseTime&&t.offenseTime!=="00:00"?t.offenseTime:"")}"></div>
    </div>
    <div id="matchBox"></div>
    <div class="grid2">
-    <div class="field"><label for="f_issuer">גורם מוציא</label><select id="f_issuer">${iss.map(i=>`<option value="${i.id}" ${curIss===i.id?"selected":""}>${esc(i.name)}</option>`).join("")}</select></div>
+    <div class="field"><label for="f_issuer">גורם מוציא</label><select id="f_issuer">${isBinder&&!t.issuerId?`<option value="" selected>— לא ידוע —</option>`:""}${iss.map(i=>`<option value="${i.id}" ${curIss===i.id?"selected":""}>${esc(i.name)}</option>`).join("")}</select></div>
     <div class="field"><label for="f_no">מספר דוח / הודעה</label><input id="f_no" value="${esc(t.ticketNo||"")}"></div>
     <div class="field"><label for="f_amt">סכום (₪)</label><input id="f_amt" inputmode="decimal" value="${esc(t.amount??"")}"></div>
     <div class="field"><label for="f_due">לתשלום עד</label><input id="f_due" type="date" value="${esc(t.dueDate||"")}"></div>
@@ -379,7 +403,7 @@ function viewAdd(t){
    ${t.id?`<button class="btn ghost" type="button" id="delBtn" style="color:var(--red);margin-inline-start:auto">מחיקה</button>`:""}</div>
   </form>`;
 }
-// ---- summary screen (display only). "Open" = not paid, not in dispute, not the lot's, not awaiting review.
+// ---- summary screen (display only). "Open" = status open (not paid, dispute, the lot's, other statuses) and not awaiting review.
 function viewSummary(){
   if(!state.ready)return `<div class="empty">טוען…</div>`;
   const amt=t=>Number(t.amount)||0, sum=l=>l.reduce((a,t)=>a+amt(t),0);
@@ -389,8 +413,11 @@ function viewSummary(){
   const late=open.filter(t=>{const d=dd(t);return d!==null&&d<0});
   const m=todayISO().slice(0,7);
   const closed=state.tickets.filter(t=>t.status==="paid"&&(t.closedAt||"").startsWith(m));
+  // "the lot paid, collect from the customer" counts as money owed (owner's decision 08/11/2026)
+  const lotPaid=state.tickets.filter(t=>t.status==="lot_paid");
   const by=new Map();
-  for(const t of open){const k=String(t.dealerId||"");const r=by.get(k)||{id:k,name:t.dealer||"לא שויך",n:0,s:0};r.n++;r.s+=amt(t);by.set(k,r)}
+  const add=(t,isOpen)=>{const k=String(t.dealerId||"");const r=by.get(k)||{id:k,name:t.dealer||"לא שויך",n:0,s:0};if(isOpen)r.n++;r.s+=amt(t);by.set(k,r)};
+  open.forEach(t=>add(t,true));lotPaid.forEach(t=>add(t,false));
   const rows=[...by.values()].sort((a,b)=>b.s-a.s||b.n-a.n);
   const shown=state.sumAll?rows:rows.slice(0,5);
   const tile=(label,big,small,cls)=>`<div class="stat ${cls||""}"><b>${big}</b><span>${label}${small?`<br>${small}`:""}</span></div>`;
@@ -400,7 +427,7 @@ function viewSummary(){
     ${tile("שבוע אחרון לתשלום",week.length,money(sum(week)))}
     ${tile("באיחור",late.length,money(sum(late)),late.length?"alert":"")}
     ${tile("נסגרו החודש",closed.length)}
-    ${tile("סה״כ חייבים",money(sum(open)))}
+    ${tile("סה״כ חייבים",money(sum(open)+sum(lotPaid)),lotPaid.length?`כולל ${money(sum(lotPaid))} שהמגרש שילם`:"")}
    </div>
    <h2>לפי סוחר <span class="count">${rows.length}</span></h2>
    ${rows.length?`<div class="panel" style="padding:4px 14px"><table class="dtab"><thead><tr><th>סוחר</th><th>דוחות פתוחים</th><th>חוב</th></tr></thead><tbody>
@@ -527,7 +554,7 @@ document.addEventListener("click",async e=>{
   const tabB=e.target.closest("[data-tab]");if(tabB&&(!e.target.closest("form")||tabB.type==="button")){go(tabB.dataset.tab);return}
   const fb=e.target.closest("[data-filter]");if(fb){state.filter=fb.dataset.filter;render();return}
   if(e.target.id==="sumAll"){state.sumAll=!state.sumAll;render();return}
-  const dr=e.target.closest("tr[data-dealer]");if(dr){state.customer=dr.dataset.dealer;state.filter="open";go("all");return}
+  const dr=e.target.closest("tr[data-dealer]");if(dr){state.customer=dr.dataset.dealer;state.filter="all";go("all");return}
   if(e.target.id==="signOut"){await sb.auth.signOut();return}
   if(e.target.id==="forgot"){const em=$("#em").value.trim();if(!em)return toast("כתבו קודם את המייל");
     const {error}=await sb.auth.resetPasswordForEmail(em,{redirectTo:location.origin+location.pathname});
@@ -577,7 +604,18 @@ document.addEventListener("submit",async e=>{
     const {error}=await sb.from("issuers").update(patch).eq("id",f.dataset.issuer);
     if(error)return toast("השמירה נכשלה: "+errText(error));toast("נשמר");await refresh();return}
   if(f.id!=="f"||state.busy)return;
-  const plate=normPlate($("#f_plate").value);if(plate.length<7)return toast("מספר רכב לא תקין");
+  const plate=normPlate($("#f_plate").value);
+  const ed=state.editing;
+  if(ed&&ed.source==="binder"&&!plate){  // binder ticket without a car number: save the fields it has, keep its customer
+    const num=v=>{const x=Number(String(v).replace(/[^\d.]/g,""));return v&&isFinite(x)?x:null};
+    const patch={amount:num($("#f_amt").value),due_date:$("#f_due").value||null,double_date:$("#f_dbl").value||$("#f_due").value||null,
+      ticket_no:$("#f_no").value.trim()||null,issuer_id:Number($("#f_issuer").value)||null,pay_link:$("#f_link").value.trim()||null,
+      notes:$("#f_notes").value.trim()||null,status:$("#f_status")?.value||ed.status};
+    if(patch.status!=="paid")patch.closed_at=null;else if(ed.status!=="paid")patch.closed_at=new Date().toISOString();
+    const {error}=await sb.from("tickets").update(patch).eq("id",ed.id);
+    if(error)return toast("השמירה נכשלה: "+errText(error));
+    toast("הדוח עודכן");state.editing=null;await refresh();go("all");return}
+  if(plate.length<7)return toast("מספר רכב לא תקין");
   const off=$("#f_off").value;
   state.busy=true;
   try{
@@ -601,6 +639,8 @@ document.addEventListener("submit",async e=>{
     const id=$("#f_id").value;let error;
     const wasReview=!!(id&&state.editing&&state.editing.reviewNeeded);
     if(wasReview){if(!data.issuer_id)return toast("צריך לבחור גורם מוציא");data.review_needed=false;data.review_reason=null;data.status=m.before?"ours":"open"}
+    else if(id&&$("#f_status")){data.status=$("#f_status").value;
+      if(data.status!=="paid")data.closed_at=null;else if(ed&&ed.status!=="paid")data.closed_at=new Date().toISOString()}
     if(id)({error}=await sb.from("tickets").update(data).eq("id",id));
     else({error}=await sb.from("tickets").insert({...data,status:m.before?"ours":"open",created_by:state.user.id}));
     if(error)throw error;
