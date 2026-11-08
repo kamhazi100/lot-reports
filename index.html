@@ -131,6 +131,10 @@ textarea{min-height:90px;resize:vertical}
 .dtab td:nth-child(2),.dtab th:nth-child(2){text-align:center}
 .dtab td:nth-child(3),.dtab th:nth-child(3){text-align:end;font-weight:700}
 .status-line{font-size:13px;color:var(--muted);margin-top:4px}
+.checkbar{display:flex;align-items:center;gap:8px;width:100%;margin-bottom:10px;padding:12px 14px;border-radius:var(--r);border:1px solid var(--red);background:var(--red-bg);color:var(--red);font-weight:700;font-size:16px;text-align:start}
+.checkbar b{font-family:var(--f-display);font-size:22px}
+.checkbar span{margin-inline-start:auto;font-size:14px}
+.sheet input{margin-top:4px}
 .login{max-width:420px;margin:12vh auto 0}
 body.signed-out nav.tabs,body.signed-out #exportBtn{display:none}
 @media (prefers-reduced-motion:no-preference){.card{transition:border-color .2s}}
@@ -167,7 +171,7 @@ const sb=supabase.createClient(SUPABASE_URL,SUPABASE_KEY);
 const $=s=>document.querySelector(s);
 const esc=s=>String(s??"").replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
 const DAY=86400000;
-const state={tab:"today",filter:"open",q:"",customer:"",tickets:[],dealers:{},dealerByName:{},issuers:{},issuerByName:{},
+const state={tab:"today",filter:"open",q:"",customer:"",source:"",tickets:[],dealers:{},dealerByName:{},issuers:{},issuerByName:{},
   ready:false,user:null,mode:"login",editing:null,match:null,matchFor:"",busy:false};
 
 function todayISO(){const d=new Date();d.setMinutes(d.getMinutes()-d.getTimezoneOffset());return d.toISOString().slice(0,10)}
@@ -195,14 +199,23 @@ function fromRow(r){
     source:r.source,reviewNeeded:r.review_needed,emailFrom:r.email_from||"",emailSubject:r.email_subject||"",
     emailReceivedAt:r.email_received_at,fileUrl:r.file_url||"",extractRaw:r.extract_raw,
     delivered,reviewReason:r.review_reason||"",instCustomer:r.inst_customer||"",instSaleDate:r.inst_sale_date||"",
-    binderRow:r.binder_row,binderName:r.binder_name||"",binderNote:r.binder_note||""};
+    binderRow:r.binder_row,binderName:r.binder_name||"",binderNote:r.binder_note||"",
+    doubledAt:r.doubled_at,newDeadline:r.new_deadline||"",clientHandling:!!r.client_handling,lastAction:lastActionText(r.ticket_actions)};
+}
+const ACTION_NAME={paid:"שולם",doubled:"הוכפל",deadline:"עודכן מועד אחרון",transfer:"הוגשה הסבה",transferok:"הסבה התקבלה",transferno:"הסבה נדחתה",
+  legal:"הועבר לטיפול משפטי",lotpaid:"שולם ע\"י מיליון",legaldone:"הטיפול המשפטי הסתיים",lotdone:"טופל",reopen:"נפתח מחדש"};
+function lastActionText(list){
+  if(!list||!list.length)return "";
+  const a=list.slice().sort((x,y)=>(y.at||"").localeCompare(x.at||""))[0];
+  const when=new Date(a.at);
+  return `פעולה אחרונה: ${ACTION_NAME[a.action]||a.action} · ${fmt(a.at.slice(0,10))} ${when.toLocaleTimeString("he-IL",{hour:"2-digit",minute:"2-digit"})}${a.by_email?` · ${a.by_email}`:""}`;
 }
 async function load(){
   const [d,i]=await Promise.all([sb.from("dealers").select("id,name,phone").order("name"),sb.from("issuers").select("*").order("id")]);
   if(d.error)throw d.error;if(i.error)throw i.error;
   state.dealers={};state.dealerByName={};d.data.forEach(x=>{state.dealers[x.id]=x;state.dealerByName[x.name]=x});
   state.issuers={};state.issuerByName={};i.data.forEach(x=>{state.issuers[x.id]=x;state.issuerByName[x.name]=x});
-  const t=await sb.from("tickets").select("*, message_log(kind,sent_at), deliveries(kind,delivered_at), car_sales(sale_date,model)").order("created_at");
+  const t=await sb.from("tickets").select("*, message_log(kind,sent_at), deliveries(kind,delivered_at), car_sales(sale_date,model), ticket_actions(action,at,by_email)").order("created_at");
   if(t.error)throw t.error;
   state.tickets=t.data.map(fromRow);state.ready=true;
   $("#conn").textContent=`מחובר/ת: ${state.user.email} · ${state.tickets.length} דוחות`;
@@ -224,38 +237,70 @@ async function findSale(plate,off){
 }
 function dealerOf(t){return state.dealers[t.dealerId]||{name:t.dealer,phone:""}}
 
-// ---- stage logic: counted backwards from the double-fine date (fallback: due date)
+// ---- status flow (owner's design, 08/11/2026)
+//   open -> deadline passes -> expired -> "paid" (archive) | "doubled" (back to open, doubled amount, no deadline)
+//   doubled + "update deadline" -> normal again (reminders, expires again; no second "doubled")
+//   "transfer submitted" (only before doubling) -> transfers -> accepted (archive) | rejected (open / expired)
+//   legal -> "handling finished" (archive);  "paid by Million" -> "handled" (archive)
+const ARCHIVE=["paid","done"];
+function deadline(t){return t.doubledAt?t.newDeadline:(t.doubleDate||t.dueDate)}       // the date that counts now
+function debt(t){return Number(t.doubledAt&&Number(t.amountAfter)?t.amountAfter:t.amount)||0}  // doubled -> amount after doubling
+function tabOf(t){
+  if(t.reviewNeeded)return "review";
+  if(ARCHIVE.includes(t.status))return "archive";
+  if(t.status==="legal")return "legal";
+  if(t.status==="lot_paid")return "lotpaid";
+  if(t.status==="pending_transfer"||t.status==="client_handling")return "transfer";
+  if(t.status!=="open")return "none";                // dispute / the lot's: only under "all"
+  const d=daysTo(deadline(t));
+  return d!==null&&d<0?"expired":"open";
+}
+function transferLate(t){const d=daysTo(t.doubleDate||t.dueDate);return t.status==="pending_transfer"&&d!==null&&d<0}
+function needsCheck(t){return tabOf(t)==="expired"||transferLate(t)}
+
+// messages: same thresholds as due_kind() in the database
 function stage(t){
-  if(t.reviewNeeded)return {k:"review",label:"מהמייל – לבדיקה",msg:null};
-  if(t.status==="paid")return {k:"paid",label:"שולם",msg:null};
-  if(t.status==="dispute")return {k:"dispute",label:"במחלוקת – מוקפא",msg:null};
-  if(t.status==="ours")return {k:"ours",label:"לטיפול המגרש",msg:null};
-  if(OTHER_STATUS[t.status])return {k:"other",label:OTHER_STATUS[t.status],msg:null};
-  const d=daysTo(t.doubleDate||t.dueDate); const sent=t.sent||{};
-  if(t.source==="binder"){  // binder: reminders a week and two days before only; no intake, no late alert
+  const tab=tabOf(t), sent=t.sent||{}, d=daysTo(deadline(t));
+  if(tab==="review")return {k:"review",label:"לבדיקה",msg:null};
+  if(tab==="archive")return {k:"paid",label:t.status==="done"?"טופל":"שולם",msg:null};
+  if(tab==="legal")return {k:"other",label:"בטיפול משפטי",msg:null};
+  if(tab==="lotpaid")return {k:"other",label:"שולם ע\"י מיליון",msg:null};
+  if(tab==="transfer")return {k:transferLate(t)?"late":"other",label:t.status==="client_handling"?"בטיפול הלקוח":"הוגשה הסבה",msg:null};
+  if(t.status==="dispute")return {k:"dispute",label:"במחלוקת",msg:null};
+  if(t.status==="ours")return {k:"ours",label:"של המגרש",msg:null};
+  if(tab==="expired")return {k:"late",label:"עבר תוקף",msg:null,d};
+  if(t.doubledAt){
+    if(d===null)return {k:"wait",label:"הוכפל",msg:null,d};
+    if(d<=1)return {k:"red",label:"הוכפל – יום לפני",msg:sent.x1?null:"x1",d};
+    if(d<=3)return {k:"r3",label:"הוכפל – 3 ימים",msg:sent.x3?null:"x3",d};
+    if(d<=5)return {k:"r5",label:"הוכפל – 5 ימים",msg:sent.x5?null:"x5",d};
+    return {k:"wait",label:"הוכפל",msg:null,d};
+  }
+  if(t.source==="binder"){
     if(d===null)return {k:"wait",label:"פתוח",msg:null,d};
-    if(d<0)return {k:"blate",label:"באיחור",msg:null,d};
     if(d<=2)return {k:"r3",label:"קלסר – יומיים לפני",msg:sent.b2?null:"b2",d};
     if(d<=7)return {k:"r5",label:"קלסר – שבוע לפני",msg:sent.b7?null:"b7",d};
     return {k:"wait",label:"פתוח",msg:null,d};
   }
   const check=d===2||d===0;
   if(d===null)return {k:"new",label:"חסר מועד",msg:sent.intake?null:"intake",d};
-  if(d<0)return {k:"late",label:"עבר מועד הכפל",msg:null,d};
   if(d<=1)return {k:"red",label:"דגל אדום",msg:sent.r1?null:"r1",d,check};
   if(d<=3)return {k:"r3",label:"תזכורת שנייה",msg:sent.r3?null:"r3",d,check};
   if(d<=5)return {k:"r5",label:"תזכורת ראשונה",msg:sent.r5?null:"r5",d};
   return {k:sent.intake?"wait":"new",label:sent.intake?"ממתין":"נקלט – לשלוח הודעה",msg:sent.intake?null:"intake",d};
 }
-function needsAction(t){const s=stage(t);return !t.reviewNeeded&&(s.msg||s.check||s.k==="red"||s.k==="late")}
+// "Today" list: only tickets in the open tab that need a message or a call (expired ones are in the banner)
+function needsAction(t){if(tabOf(t)!=="open")return false;const s=stage(t);return !!(s.msg||s.check||s.k==="red")}
 
 // ---- WhatsApp messages: built in the database (ticket_message), the same text Inst receives.
 async function message(t,kind){
   const {data,error}=await sb.rpc("ticket_message",{p_ticket:t.id,p_kind:kind});
   if(error)throw error;return data||"";
 }
-const MSG_NAME={intake:"הודעת קליטה",r5:"תזכורת 5 ימים",r3:"תזכורת 3 ימים",r1:"הודעה דחופה – יום לפני",b7:"תזכורת קלסר – שבוע לפני",b2:"תזכורת קלסר – יומיים לפני"};
-const OTHER_STATUS={pending_transfer:"ממתין להסבה",lot_paid:"המגרש שילם – לגבות מהלקוח",client_handling:"בטיפול הלקוח",legal:"בטיפול משפטי"};
+const MSG_NAME={intake:"הודעת קליטה",r5:"תזכורת 5 ימים",r3:"תזכורת 3 ימים",r1:"הודעה דחופה – יום לפני",b7:"תזכורת קלסר – שבוע לפני",b2:"תזכורת קלסר – יומיים לפני",
+  x5:"הוכפל – 5 ימים למועד",x3:"הוכפל – 3 ימים למועד",x1:"הוכפל – יום לפני המועד"};
+const OTHER_STATUS={pending_transfer:"הוגשה הסבה",lot_paid:"שולם ע\"י מיליון",legal:"בטיפול משפטי",done:"טופל"};
+const TABS={open:"פתוחים",expired:"עבר תוקף",transfer:"הסבות ובטיפול הלקוח",legal:"טיפול משפטי",lotpaid:"שולם ע\"י מיליון",archive:"ארכיון (שולמו)",all:"הכול"};
 
 // ---- rendering
 function reviewCard(t){
@@ -286,98 +331,124 @@ function reviewCard(t){
     ${t.fileUrl?`<a class="btn small" href="${esc(t.fileUrl)}" target="_blank" rel="noopener">פתיחת הדוח המקורי</a>`:""}
    </div></article>`;
 }
+const B=(act,label,cls)=>`<button class="btn small ${cls||""}" data-act="${act}" type="button">${label}</button>`;
 function card(t){
   if(t.reviewNeeded)return reviewCard(t);
-  const s=stage(t), dl=dealerOf(t);
-  const d=s.d;
+  const s=stage(t), dl=dealerOf(t), tab=tabOf(t), d=daysTo(deadline(t));
   const isBinder=t.source==="binder";
-  const daysTxt=(d===null||d===undefined||["paid","dispute","ours","other"].includes(s.k))?"":(d<0?`<span class="days" style="color:var(--red)">${-d} ימים באיחור</span>`:d===0?`<span class="days" style="color:var(--red)">היום!</span>`:`<span class="days">${d} ימים לכפל</span>`);
+  const daysTxt=(tab==="open"||tab==="expired")&&d!==null?(d<0?`<span class="days" style="color:var(--red)">עבר לפני ${-d} ימים</span>`:d===0?`<span class="days" style="color:var(--red)">היום!</span>`:`<span class="days">${d} ימים ${t.doubledAt?"למועד":"לכפל"}</span>`):"";
   let note="";
-  if(s.k==="red")note=`<div class="note red">דגל אדום: מומלץ להתקשר עכשיו ל${esc(dl.name||"סוחר")}${dl.phone?` – <span dir="ltr">${esc(dl.phone)}</span>`:""}</div>`;
-  if(s.k==="late")note=`<div class="note red">מועד הכפל עבר ולא סומן תשלום. לבדוק באתר התשלום ולטפל מיד.</div>`;
-  if(s.check)note+=`<div class="note amber">היום בודקים אם הדוח שולם.</div>`;
+  if(tab==="open"&&s.k==="red")note+=`<div class="note red">דגל אדום: מומלץ להתקשר עכשיו ל${esc(dl.name||"סוחר")}${dl.phone?` – <span dir="ltr">${esc(dl.phone)}</span>`:""}</div>`;
+  if(tab==="expired")note+=`<div class="note red">${t.doubledAt?"גם המועד החדש עבר.":"מועד הכפל עבר."} צריך לבדוק אם הדוח שולם.</div>`;
+  if(transferLate(t))note+=`<div class="note red">עבר התאריך: מועד הכפל (${fmt(t.doubleDate||t.dueDate)}) עבר וההסבה עוד לא נסגרה.</div>`;
+  if(s.check&&tab==="open")note+=`<div class="note amber">היום בודקים אם הדוח שולם.</div>`;
+  if(t.clientHandling&&tab!=="archive")note+=`<div class="note amber">בטיפול הלקוח</div>`;
   if(t.offenseDate&&t.saleDate&&t.offenseDate<t.saleDate&&t.status!=="ours")note+=`<div class="note amber">שימו לב: העבירה (${fmt(t.offenseDate)}) קרתה לפני המכירה (${fmt(t.saleDate)}). כנראה שהדוח שייך למגרש.</div>`;
   if(t.notes)note+=`<div class="note">${esc(t.notes)}</div>`;
   if(t.binderNote)note+=`<div class="note">מהקלסר: ${esc(t.binderNote)}</div>`;
-  const closed=["paid","dispute","ours"].includes(s.k);
-  const canMsg=t.status==="open"&&!closed;
+  if(t.lastAction)note+=`<div class="sub">${esc(t.lastAction)}</div>`;
   const sentList=Object.keys(MSG_NAME).filter(k=>t.sent[k]).map(k=>`${MSG_NAME[k]} ${fmt(t.sent[k])}`).join(" · ");
   const delList=Object.keys(MSG_NAME).filter(k=>t.delivered[k]).map(k=>`${MSG_NAME[k]} ${fmt(t.delivered[k])}`).join(" · ");
   const noLink=!t.payLink&&!(state.issuers[t.issuerId]||{}).pay_link;
-  if(noLink&&canMsg&&!isBinder)note+=`<div class="note amber">חסר קישור לתשלום. צריך להשלים בעריכה (או בהגדרות של הגורם) לפני שליחה.</div>`;
+  if(noLink&&tab==="open"&&!isBinder)note+=`<div class="note amber">חסר קישור לתשלום. צריך להשלים בעריכה (או בהגדרות של הגורם) לפני שליחה.</div>`;
+  // buttons per tab
+  const toLegal=B("legal","טיפול משפטי","ghost"), toLot=B("lotpaid","שולם ע\"י מיליון","ghost");
+  let acts="";
+  if(tab==="open"){
+    if(s.msg)acts+=`<button class="btn wa" data-act="msg" data-kind="${s.msg}" type="button">${MSG_NAME[s.msg]}</button>`;
+    else if(!t.doubledAt||t.newDeadline)acts+=`<button class="btn small" data-act="msg" data-kind="${t.doubledAt?"x5":isBinder?"b7":(d!==null&&d<=1)?"r1":"r5"}" type="button">הודעה נוספת</button>`;
+    acts+=B("paid","שולם ✓");
+    if(t.doubledAt)acts+=B("deadline","עדכון מועד אחרון");
+    else acts+=B("transfer","הוגשה הסבה");
+    acts+=toLot+toLegal;
+  }else if(tab==="expired"){
+    acts+=B("paid","שולם ✓","primary");
+    if(!t.doubledAt)acts+=B("doubled","הוכפל");
+    acts+=toLot+toLegal;
+  }else if(tab==="transfer"){
+    acts+=B("transferok","הסבה התקבלה","primary")+B("transferno","הסבה נדחתה")+toLot+toLegal;
+  }else if(tab==="legal"){
+    acts+=B("legaldone","הטיפול הסתיים","primary")+toLot;
+  }else if(tab==="lotpaid"){
+    acts+=B("lotdone","טופל","primary")+toLegal;
+  }else{
+    acts+=B("reopen","פתח מחדש","ghost");
+  }
+  if(t.payLink&&(tab==="open"||tab==="expired"))acts+=`<a class="btn small" href="${esc(t.payLink)}" target="_blank" rel="noopener">בדיקה באתר</a>`;
+  acts+=B("edit","עריכה","ghost");
+  const amt=t.doubledAt&&Number(t.amountAfter)?`<span>סכום <b>${money(t.amountAfter)}</b> <s class="sub">${money(t.amount)}</s></span>`:`<span>סכום <b>${money(t.amount)}</b></span>`;
+  const dateTxt=t.doubledAt?(t.newDeadline?`<span>מועד חדש <b>${fmt(t.newDeadline)}</b></span>`:`<span>הוכפל ב־<b>${fmt((t.doubledAt||"").slice(0,10))}</b></span>`):`<span>כפל ב־<b>${fmt(t.doubleDate||t.dueDate)}</b></span>`;
   return `<article class="card s-${s.k}" data-id="${esc(t.id)}">
-   <div class="row between">${isBinder&&!t.plate?`<span class="binder">קלסר · שורה ${esc(t.binderRow)}</span>`:plateHTML(t.plate)}<span class="row" style="gap:6px">${isBinder&&t.plate?`<span class="binder">קלסר</span>`:""}${t.isSample?`<span class="sample">לדוגמה</span>`:""}<span class="pill p-${s.k}">${esc(s.label)}</span></span></div>
+   <div class="row between">${isBinder&&!t.plate?`<span class="binder">קלסר · שורה ${esc(t.binderRow)}</span>`:plateHTML(t.plate)}<span class="row" style="gap:6px">${isBinder&&t.plate?`<span class="binder">קלסר</span>`:""}${t.isSample?`<span class="sample">לדוגמה</span>`:""}${t.doubledAt&&tab!=="archive"?`<span class="pill p-red">הוכפל</span>`:""}<span class="pill p-${s.k}">${esc(s.label)}</span></span></div>
    <div class="row between"><div class="who">${esc(t.dealer||"לא שויך")}</div>${daysTxt}</div>
-   <div class="meta">${t.issuer?`<span>${esc(t.issuer)}</span>`:""}<span>סכום <b>${money(t.amount)}</b></span><span>כפל ב־<b>${fmt(t.doubleDate||t.dueDate)}</b></span>${t.saleDate?`<span>נמכר <b>${fmt(t.saleDate)}</b></span>`:""}<span>התקבל <b>${fmt(t.receivedDate)}</b></span></div>
+   <div class="meta">${t.issuer?`<span>${esc(t.issuer)}</span>`:""}${amt}${dateTxt}${t.saleDate?`<span>נמכר <b>${fmt(t.saleDate)}</b></span>`:""}<span>התקבל <b>${fmt(t.receivedDate)}</b></span></div>
    ${delList?`<div class="sub">נמסר לאינסט: ${esc(delList)}</div>`:""}
    ${sentList?`<div class="sub">נשלח לסוחר: ${esc(sentList)}</div>`:""}
    ${note}
-   <div class="actions">
-    ${s.msg?`<button class="btn wa" data-act="msg" data-kind="${s.msg}" type="button">${MSG_NAME[s.msg]}</button>`:""}
-    ${canMsg&&!s.msg?`<button class="btn small" data-act="msg" data-kind="${isBinder?"b7":(d!==null&&d<=1)?"r1":"r5"}" type="button">הודעה נוספת</button>`:""}
-    ${t.payLink&&!closed?`<a class="btn small" href="${esc(t.payLink)}" target="_blank" rel="noopener">בדיקה באתר</a>`:""}
-    ${!closed?`<button class="btn small" data-act="paid" type="button">שולם ✓</button><button class="btn small ghost" data-act="dispute" type="button">מחלוקת</button>`:`<button class="btn small ghost" data-act="reopen" type="button">פתח מחדש</button>`}
-    <button class="btn small ghost" data-act="edit" type="button">עריכה</button>
-   </div></article>`;
+   <div class="actions">${acts}</div></article>`;
 }
 function stats(){
-  const open=state.tickets.filter(t=>(t.status||"open")==="open");
-  const red=open.filter(t=>{const k=stage(t).k;return k==="red"||k==="late"||k==="blate"});
-  const sum=open.reduce((a,t)=>a+(Number(t.amount)||0),0);
+  const open=state.tickets.filter(t=>tabOf(t)==="open");
+  const red=open.filter(t=>stage(t).k==="red");
+  const sum=open.reduce((a,t)=>a+debt(t),0);
   const m=todayISO().slice(0,7);
-  const paid=state.tickets.filter(t=>t.status==="paid"&&(t.closedAt||"").startsWith(m)).length;
-  const disp=state.tickets.filter(t=>t.status==="dispute").length;
+  const closedM=state.tickets.filter(t=>ARCHIVE.includes(t.status)&&(t.closedAt||"").startsWith(m)).length;
+  const transfers=state.tickets.filter(t=>tabOf(t)==="transfer").length;
   return `<div class="panel" style="display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:10px">
    <div><div class="sub">דוחות פתוחים כרגע</div><div style="font-family:var(--f-display);font-weight:800;font-size:44px;line-height:1;font-variant-numeric:tabular-nums">${open.length}</div></div>
    <div style="text-align:left"><div class="sub">סכום פתוח</div><div style="font-family:var(--f-display);font-weight:700;font-size:22px">${money(sum)}</div></div></div>
    <div class="stats">
-   <div class="stat ${red.length?"alert":""}"><b>${red.length}</b><span>דגל אדום / באיחור</span></div>
+   <div class="stat ${red.length?"alert":""}"><b>${red.length}</b><span>דגל אדום</span></div>
    <div class="stat"><b>${open.length-red.length}</b><span>בתהליך תזכורות</span></div>
-   <div class="stat"><b>${disp}</b><span>במחלוקת</span></div>
-   <div class="stat"><b>${paid}</b><span>נסגרו החודש</span></div></div>`;
+   <div class="stat"><b>${transfers}</b><span>הסבות ובטיפול הלקוח</span></div>
+   <div class="stat"><b>${closedM}</b><span>נסגרו החודש</span></div></div>`;
 }
-function sorted(list){return list.slice().sort((a,b)=>(daysTo(a.doubleDate||a.dueDate)??999)-(daysTo(b.doubleDate||b.dueDate)??999))}
+function sorted(list){return list.slice().sort((a,b)=>(daysTo(deadline(a))??999)-(daysTo(deadline(b))??999))}
 function viewToday(){
   if(!state.ready)return `<div class="empty">טוען את הדוחות…</div>`;
   const act=sorted(state.tickets.filter(needsAction));
   const rev=state.tickets.filter(t=>t.reviewNeeded);
-  return stats()+(rev.length?`<h2>לבדיקה <span class="count">${rev.length}</span></h2><div class="list">${rev.map(reviewCard).join("")}</div>`:"")+
+  const chk=state.tickets.filter(needsCheck).length;
+  return (chk?`<button class="checkbar" id="openCheck" type="button"><b>${chk}</b> דוחות ממתינים לבדיקה<span>פתיחה ‹</span></button>`:"")+
+   stats()+(rev.length?`<h2>לבדיקה <span class="count">${rev.length}</span></h2><div class="list">${rev.map(reviewCard).join("")}</div>`:"")+
    `<h2>לטיפול היום <span class="count">${act.length}</span></h2>`+
    (act.length?`<div class="list">${act.map(card).join("")}</div>`:
     `<div class="empty">אין משימות פתוחות להיום.<br>דוח חדש? לחצו על <b>+ דוח חדש</b> למטה.</div>`);
 }
 function viewAll(){
-  const F={open:"פתוחים",review:"לבדיקה",red:"דחופים",other:"בטיפול / הסבה / לגבות",binder:"קלסר",dispute:"מחלוקת",paid:"שולמו",all:"הכול"};
-  let l=state.tickets.filter(t=>{const k=stage(t).k;
-    if(state.filter==="review")return k==="review";
-    if(state.filter==="open")return t.status==="open";
-    if(state.filter==="other")return k==="other";
-    if(state.filter==="binder")return t.source==="binder";
-    if(state.filter==="red")return k==="red"||k==="late"||k==="blate";
-    if(state.filter==="dispute")return k==="dispute"||k==="ours";
-    if(state.filter==="paid")return k==="paid";return true});
+  const F=TABS;
+  let l=state.filter==="check"?state.tickets.filter(needsCheck)
+    :state.filter==="all"?state.tickets.slice():state.tickets.filter(t=>tabOf(t)===state.filter);
   if(state.customer)l=l.filter(t=>String(t.dealerId)===state.customer);
+  if(state.source==="binder")l=l.filter(t=>t.source==="binder");
+  if(state.source==="system")l=l.filter(t=>t.source!=="binder");
   const custs=[...new Map(state.tickets.filter(t=>t.dealerId).map(t=>[String(t.dealerId),t.dealer])).entries()].sort((a,b)=>a[1].localeCompare(b[1],"he"));
   const q=state.q.trim();
   if(q)l=l.filter(t=>normPlate(q)&&normPlate(t.plate).includes(normPlate(q))||(t.dealer||"").includes(q)||(t.ticketNo||"").includes(q)||(t.binderName||"").includes(q));
+  const title=state.filter==="check"?"ממתינים לבדיקה":F[state.filter]||"הכול";
   return `<input class="search" id="q" type="search" placeholder="חיפוש לפי מספר רכב, סוחר או מספר דוח" value="${esc(state.q)}">
-   <div class="field" style="margin-bottom:10px"><label for="custSel">לקוח</label><select id="custSel"><option value="">כל הלקוחות</option>${custs.map(([id,n])=>`<option value="${esc(id)}" ${state.customer===id?"selected":""}>${esc(n)}</option>`).join("")}</select></div>
+   <div class="row" style="margin-bottom:10px;align-items:flex-end;flex-wrap:nowrap">
+    <div class="field" style="flex:1"><label for="custSel">לקוח</label><select id="custSel"><option value="">כל הלקוחות</option>${custs.map(([id,n])=>`<option value="${esc(id)}" ${state.customer===id?"selected":""}>${esc(n)}</option>`).join("")}</select></div>
+    <div class="field" style="width:120px;flex:none"><label for="srcSel">מקור</label><select id="srcSel">${[["","הכול"],["system","מערכת"],["binder","קלסר"]].map(([v,n])=>`<option value="${v}" ${state.source===v?"selected":""}>${n}</option>`).join("")}</select></div>
+   </div>
    <div class="chips">${Object.entries(F).map(([k,v])=>`<button class="chip" data-filter="${k}" aria-pressed="${state.filter===k}" type="button">${v}</button>`).join("")}</div>
-   <h2>${F[state.filter]} <span class="count">${l.length}</span></h2>`+
+   <h2>${esc(title)} <span class="count">${l.length}</span></h2>`+
    (l.length?`<div class="list">${sorted(l).map(card).join("")}</div>`:`<div class="empty">אין דוחות ברשימה הזו.</div>`);
 }
 function viewAdd(t){
   t=t||{};const iss=Object.values(state.issuers);
   const isBinder=t.source==="binder";
   const curIss=t.issuerId||(isBinder?"":(iss[0]||{}).id);
-  const STATUS_OPT={open:"פתוח",paid:"שולם",dispute:"במחלוקת",ours:"של המגרש",...OTHER_STATUS};
+  const STATUS_OPT={open:"פתוח",paid:"שולם",...OTHER_STATUS,ours:"של המגרש",...(t.status==="dispute"?{dispute:"במחלוקת"}:{})};
   return `<h2>${t.reviewNeeded?"בדיקת דוח שהגיע במייל":t.id?"עריכת דוח":"דוח חדש"}</h2><form class="panel" id="f" novalidate>
    <input type="hidden" id="f_id" value="${esc(t.id||"")}">
    ${t.reviewNeeded?`<div class="note amber">הפרטים נקראו אוטומטית מהמייל. בודקים כל שדה מול הדוח המקורי, משלימים מה שחסר ולוחצים "אישור הדוח".
      ${t.fileUrl?`<div style="margin-top:8px"><a class="btn small" href="${esc(t.fileUrl)}" target="_blank" rel="noopener">פתיחת הדוח המקורי</a></div>`:""}</div>`:""}
    ${isBinder?`<div class="note">דוח מהקלסר, שורה ${esc(t.binderRow)}${t.binderName?` (בקלסר: ${esc(t.binderName)})`:""} · לקוח: <b>${esc(t.dealer)}</b>${t.binderNote?`<br>הערה מהקלסר: ${esc(t.binderNote)}`:""}<br><small>מספר רכב לא חובה בדוח קלסר. אם מוסיפים אותו, המערכת תבדוק למי נמכר הרכב.</small></div>`:""}
    <div class="field"><label for="f_plate">מספר רכב${isBinder?" (לא חובה)":""}</label><input id="f_plate" inputmode="numeric" class="ltr" value="${esc(t.plate||"")}" ${isBinder?"":"required"}></div>
-   ${t.id&&!t.reviewNeeded?`<div class="field"><label for="f_status">סטטוס</label><select id="f_status">${Object.entries(STATUS_OPT).map(([k,v])=>`<option value="${k}" ${t.status===k?"selected":""}>${v}</option>`).join("")}</select></div>`:""}
+   ${t.id&&!t.reviewNeeded?`<div class="grid2"><div class="field"><label for="f_status">סטטוס</label><select id="f_status">${Object.entries(STATUS_OPT).map(([k,v])=>`<option value="${k}" ${t.status===k?"selected":""}>${v}</option>`).join("")}</select></div>
+    <div class="field"><label for="f_client">&nbsp;</label><label style="display:flex;align-items:center;gap:8px;min-height:44px;font-weight:600"><input id="f_client" type="checkbox" style="width:auto;min-height:0" ${t.clientHandling?"checked":""}> בטיפול הלקוח</label></div></div>`:""}
+   ${t.doubledAt?`<div class="note amber">הדוח הוכפל ב־${fmt(t.doubledAt.slice(0,10))}.</div><div class="field"><label for="f_newdl">מועד אחרון חדש (לא חובה)</label><input id="f_newdl" type="date" value="${esc(t.newDeadline||"")}"><small>אם יש מועד – הדוח מקבל תזכורות לפניו ועובר ל"עבר תוקף" אחריו.</small></div>`:""}
    <div class="grid2">
     <div class="field"><label for="f_off">תאריך העבירה</label><input id="f_off" type="date" value="${esc(t.offenseDate||"")}"></div>
     <div class="field"><label for="f_time">שעה (לא חובה)</label><input id="f_time" type="time" value="${esc(t.offenseTime&&t.offenseTime!=="00:00"?t.offenseTime:"")}"></div>
@@ -403,21 +474,20 @@ function viewAdd(t){
    ${t.id?`<button class="btn ghost" type="button" id="delBtn" style="color:var(--red);margin-inline-start:auto">מחיקה</button>`:""}</div>
   </form>`;
 }
-// ---- summary screen (display only). "Open" = status open (not paid, dispute, the lot's, other statuses) and not awaiting review.
+// ---- summary screen (display only), by the tabs: open | expired | paid by Million | archive.
+// Debt of a doubled ticket = amount after doubling. "Paid by Million" counts as owed (owner's decision 08/11/2026).
 function viewSummary(){
   if(!state.ready)return `<div class="empty">טוען…</div>`;
-  const amt=t=>Number(t.amount)||0, sum=l=>l.reduce((a,t)=>a+amt(t),0);
-  const open=state.tickets.filter(t=>t.status==="open"&&!t.reviewNeeded);
-  const dd=t=>daysTo(t.doubleDate||t.dueDate);
-  const week=open.filter(t=>{const d=dd(t);return d!==null&&d>=0&&d<=7});
-  const late=open.filter(t=>{const d=dd(t);return d!==null&&d<0});
+  const sum=l=>l.reduce((a,t)=>a+debt(t),0);
+  const open=state.tickets.filter(t=>tabOf(t)==="open");
+  const week=open.filter(t=>{const d=daysTo(deadline(t));return d!==null&&d>=0&&d<=7});
+  const late=state.tickets.filter(t=>tabOf(t)==="expired");
   const m=todayISO().slice(0,7);
-  const closed=state.tickets.filter(t=>t.status==="paid"&&(t.closedAt||"").startsWith(m));
-  // "the lot paid, collect from the customer" counts as money owed (owner's decision 08/11/2026)
-  const lotPaid=state.tickets.filter(t=>t.status==="lot_paid");
+  const closed=state.tickets.filter(t=>ARCHIVE.includes(t.status)&&(t.closedAt||"").startsWith(m));
+  const lotPaid=state.tickets.filter(t=>tabOf(t)==="lotpaid");
   const by=new Map();
-  const add=(t,isOpen)=>{const k=String(t.dealerId||"");const r=by.get(k)||{id:k,name:t.dealer||"לא שויך",n:0,s:0};if(isOpen)r.n++;r.s+=amt(t);by.set(k,r)};
-  open.forEach(t=>add(t,true));lotPaid.forEach(t=>add(t,false));
+  const add=(t,isOpen)=>{const k=String(t.dealerId||"");const r=by.get(k)||{id:k,name:t.dealer||"לא שויך",n:0,s:0};if(isOpen)r.n++;r.s+=debt(t);by.set(k,r)};
+  open.forEach(t=>add(t,true));late.forEach(t=>add(t,true));lotPaid.forEach(t=>add(t,false));
   const rows=[...by.values()].sort((a,b)=>b.s-a.s||b.n-a.n);
   const shown=state.sumAll?rows:rows.slice(0,5);
   const tile=(label,big,small,cls)=>`<div class="stat ${cls||""}"><b>${big}</b><span>${label}${small?`<br>${small}`:""}</span></div>`;
@@ -425,12 +495,12 @@ function viewSummary(){
    <div class="stats sum5">
     ${tile("דוחות פתוחים",open.length)}
     ${tile("שבוע אחרון לתשלום",week.length,money(sum(week)))}
-    ${tile("באיחור",late.length,money(sum(late)),late.length?"alert":"")}
+    ${tile("עבר תוקף",late.length,money(sum(late)),late.length?"alert":"")}
     ${tile("נסגרו החודש",closed.length)}
-    ${tile("סה״כ חייבים",money(sum(open)+sum(lotPaid)),lotPaid.length?`כולל ${money(sum(lotPaid))} שהמגרש שילם`:"")}
+    ${tile("סה״כ חייבים",money(sum(open)+sum(late)+sum(lotPaid)),lotPaid.length?`כולל ${money(sum(lotPaid))} שולם ע"י מיליון`:"")}
    </div>
    <h2>לפי סוחר <span class="count">${rows.length}</span></h2>
-   ${rows.length?`<div class="panel" style="padding:4px 14px"><table class="dtab"><thead><tr><th>סוחר</th><th>דוחות פתוחים</th><th>חוב</th></tr></thead><tbody>
+   ${rows.length?`<div class="panel" style="padding:4px 14px"><table class="dtab"><thead><tr><th>סוחר</th><th>פתוחים + עבר תוקף</th><th>חוב</th></tr></thead><tbody>
     ${shown.map(r=>`<tr data-dealer="${esc(r.id)}" tabindex="0" role="link"><td>${esc(r.name)}</td><td>${r.n}</td><td>${money(r.s)}</td></tr>`).join("")}
     </tbody></table>
     ${rows.length>5?`<div style="padding:10px 0"><button class="btn small ghost" id="sumAll" type="button">${state.sumAll?"הצג פחות":`הצג הכול (${rows.length})`}</button></div>`:""}</div>`
@@ -452,7 +522,9 @@ function viewSettings(){
    <div>• כפתור הוואטסאפ מעתיק את ההודעה ופותח את וואטסאפ. בוחרים את איש הקשר ושולחים.</div>
    <div>• אחרי השליחה לוחצים "סמן כנשלח". כל שלב נרשם פעם אחת.</div>
    <div>• תזכורות: 5 ו־3 ימים לפני הכפל. יום לפני: דגל אדום והמלצה להתקשר. יומיים לפני וביום עצמו: בדיקה אם שולם.</div>
-   <div>• "מחלוקת" מקפיאה את התזכורות לדוח עד שפותחים אותו מחדש.</div>
+   <div>• כשמועד הכפל עובר, הדוח עובר ל"עבר תוקף": מסמנים "שולם" (לארכיון) או "הוכפל" (חוזר לפתוחים עם הסכום אחרי הכפל).</div>
+   <div>• "הוגשה הסבה" מעביר להסבות. שם: "התקבלה" (לארכיון) או "נדחתה" (חוזר לפתוחים).</div>
+   <div>• "טיפול משפטי" ו"שולם ע"י מיליון" – בלי תזכורות. "שולם ע"י מיליון" נספר בחוב של הלקוח.</div>
    <div>• "ייצוא לגיליון" מעתיק את כל הדוחות, להדבקה בגוגל שיטס.</div></div>
    <h2>חשבון</h2><div class="panel row between"><span>${esc(state.user?.email||"")}</span><button class="btn small ghost" id="signOut" type="button">יציאה</button></div>`;
 }
@@ -535,9 +607,26 @@ function confirmSheet(text,okLabel,fn){
   $("#sh").addEventListener("click",e=>{if(e.target.id==="sh"||e.target.closest("[data-close]"))closeSheet()});
   $("#ok").onclick=async()=>{closeSheet();await fn()};
 }
+// a confirm sheet with one optional input; fn(value) returns true to close
+function askSheet(title,text,input,okLabel,fn){
+  $("#sheetHost").innerHTML=`<div class="sheet" id="sh"><div><b>${esc(title)}</b><div class="sub">${esc(text)}</div>
+    ${input?`<div class="field"><label for="${input.id}">${esc(input.label)}</label><input id="${input.id}" type="${input.type}" ${input.mode?`inputmode="${input.mode}"`:""} value="${esc(input.value||"")}"></div>`:""}
+    <div class="actions"><button class="btn primary" id="ok" type="button">${esc(okLabel)}</button><button class="btn ghost" data-close type="button">ביטול</button></div></div></div>`;
+  $("#sh").addEventListener("click",e=>{if(e.target.id==="sh"||e.target.closest("[data-close]"))closeSheet()});
+  if(input)setTimeout(()=>$("#"+input.id)?.focus(),50);
+  $("#ok").onclick=async()=>{const b=$("#ok");b.disabled=true;const ok=await fn(input?$("#"+input.id).value:null);if(ok)closeSheet();else b.disabled=false};
+}
 let toastT;function toast(m){let el=$(".toast");if(!el){el=document.createElement("div");el.className="toast";el.setAttribute("role","status");document.body.appendChild(el)}el.textContent=m;clearTimeout(toastT);toastT=setTimeout(()=>el.remove(),2600)}
 
 // ---- writes
+// a flow step: update the ticket and record who did it and when
+async function doAction(t,action,patch,details){
+  const {error}=await sb.from("tickets").update(patch).eq("id",t.id);
+  if(error){toast("השמירה נכשלה: "+errText(error));return false}
+  const r=await sb.from("ticket_actions").insert({ticket_id:t.id,action,by_user:state.user.id,by_email:state.user.email,details:details||null});
+  if(r.error)toast("נשמר, אבל הרישום ביומן נכשל: "+errText(r.error));
+  await refresh();render();return true;
+}
 async function saveTicket(id,patch){
   const {error}=await sb.from("tickets").update(patch).eq("id",id);
   if(error){toast("השמירה נכשלה: "+errText(error));return false}
@@ -554,6 +643,7 @@ document.addEventListener("click",async e=>{
   const tabB=e.target.closest("[data-tab]");if(tabB&&(!e.target.closest("form")||tabB.type==="button")){go(tabB.dataset.tab);return}
   const fb=e.target.closest("[data-filter]");if(fb){state.filter=fb.dataset.filter;render();return}
   if(e.target.id==="sumAll"){state.sumAll=!state.sumAll;render();return}
+  if(e.target.closest("#openCheck")){state.filter="check";state.customer="";state.source="";go("all");return}
   const dr=e.target.closest("tr[data-dealer]");if(dr){state.customer=dr.dataset.dealer;state.filter="all";go("all");return}
   if(e.target.id==="signOut"){await sb.auth.signOut();return}
   if(e.target.id==="forgot"){const em=$("#em").value.trim();if(!em)return toast("כתבו קודם את המייל");
@@ -576,9 +666,27 @@ document.addEventListener("click",async e=>{
       const {error}=await sb.rpc("resolve_conflict",{p_ticket:id,p_choice:act==="keepdb"?"db":"inst"});
       if(error)return toast("השמירה נכשלה: "+errText(error));toast("נשמר. הדוח נכנס לתהליך");await refresh();render()});
   }
-  if(act==="paid")confirmSheet(`לסמן שהדוח לרכב ${plateFmt(t.plate)} שולם?`,"כן, שולם",async()=>{if(await saveTicket(id,{status:"paid",closed_at:new Date().toISOString()}))toast("נסגר בהצלחה")});
-  if(act==="dispute")confirmSheet(`להעביר למחלוקת ולהקפיא תזכורות?`,"העבר למחלוקת",async()=>{if(await saveTicket(id,{status:"dispute"}))toast("הועבר לטיפול ידני")});
-  if(act==="reopen"){if(await saveTicket(id,{status:"open",closed_at:null}))toast("נפתח מחדש")}
+  const now=()=>new Date().toISOString(), who=t.plate?`לרכב ${plateFmt(t.plate)}`:`מהקלסר (שורה ${t.binderRow})`;
+  const FLOW={
+    paid:      [`לסמן שהדוח ${who} שולם? הוא יעבור לארכיון.`,"כן, שולם",{status:"paid",closed_at:now()},"עבר לארכיון"],
+    transfer:  [`לסמן שהוגשה הסבה לדוח ${who}? הוא יעבור ללשונית "הסבות".`,"כן, הוגשה הסבה",{status:"pending_transfer"},"עבר להסבות"],
+    transferok:[`ההסבה התקבלה? הדוח יעבור לארכיון.`,"כן, התקבלה",{status:"done",closed_at:now()},"עבר לארכיון"],
+    transferno:[`ההסבה נדחתה? הדוח יחזור להיות פתוח${daysTo(t.doubleDate||t.dueDate)<0?' (ומכיוון שהמועד עבר – ל"עבר תוקף")':""}.`,"כן, נדחתה",{status:"open",client_handling:false},"הדוח חזר להיות פתוח"],
+    legal:     [`להעביר את הדוח ${who} לטיפול משפטי? לא יישלחו עליו תזכורות.`,"העבר לטיפול משפטי",{status:"legal"},"עבר לטיפול משפטי"],
+    lotpaid:   [`לסמן שמיליון שילמה את הדוח ${who}? הוא יעבור ל"שולם ע\"י מיליון" והלקוח יישאר חייב.`,"כן, שולם ע\"י מיליון",{status:"lot_paid"},"עבר לשולם ע\"י מיליון"],
+    legaldone: [`הטיפול המשפטי הסתיים? הדוח יעבור לארכיון.`,"כן, הסתיים",{status:"done",closed_at:now()},"עבר לארכיון"],
+    lotdone:   [`הלקוח החזיר לנו / הטיפול הסתיים? הדוח יעבור לארכיון.`,"כן, טופל",{status:"done",closed_at:now()},"עבר לארכיון"],
+    reopen:    [`לפתוח מחדש את הדוח ${who}?`,"פתח מחדש",{status:"open",closed_at:null},"נפתח מחדש"]};
+  if(FLOW[act]){const [q,ok,patch,msg]=FLOW[act];confirmSheet(q,ok,async()=>{if(await doAction(t,act,patch))toast(msg)})}
+  if(act==="doubled")askSheet(`הדוח ${who} הוכפל`,"הוא יחזור ל\"פתוחים\" עם תווית \"הוכפל\", בלי מועד, עד שיסומן \"שולם\" או שיעודכן לו מועד אחרון.",
+    Number(t.amountAfter)?null:{id:"askAmt",label:"הסכום אחרי הכפל (₪)",type:"text",mode:"decimal",value:""},"כן, הוכפל",async v=>{
+      const amt=Number(t.amountAfter)||Number(String(v||"").replace(/[^\d.]/g,""));
+      if(!amt)return toast("צריך להקליד את הסכום אחרי הכפל"),false;
+      return await doAction(t,"doubled",{doubled_at:now(),amount_after:amt,new_deadline:null},{amount_after:amt})&&(toast("הוכפל – חזר לפתוחים"),true)});
+  if(act==="deadline")askSheet(`עדכון מועד אחרון – ${who}`,"מהמועד הזה הדוח מתנהג כרגיל: תזכורות לפניו, ו\"עבר תוקף\" אחריו.",
+    {id:"askDate",label:"מועד אחרון לתשלום",type:"date",value:t.newDeadline||""},"שמירה",async v=>{
+      if(!v)return toast("צריך לבחור תאריך"),false;
+      return await doAction(t,"deadline",{new_deadline:v},{new_deadline:v})&&(toast("המועד עודכן"),true)});
   if(act==="edit"){state.editing=t;state.tab="add";render();window.scrollTo(0,0)}
 });
 document.addEventListener("keydown",e=>{const dr=e.target.closest?.("tr[data-dealer]");if(dr&&(e.key==="Enter"||e.key===" ")){e.preventDefault();dr.click()}});
@@ -588,6 +696,7 @@ document.addEventListener("input",e=>{
 });
 document.addEventListener("change",e=>{
   if(e.target.id==="custSel"){state.customer=e.target.value;render();return}
+  if(e.target.id==="srcSel"){state.source=e.target.value;render();return}
   if(e.target.id==="f_issuer"){const l=$("#f_link");const urls=Object.values(state.issuers).map(i=>i.pay_link||"");
     if(!l.value||urls.includes(l.value))l.value=(state.issuers[e.target.value]||{}).pay_link||""}
 });
@@ -610,8 +719,9 @@ document.addEventListener("submit",async e=>{
     const num=v=>{const x=Number(String(v).replace(/[^\d.]/g,""));return v&&isFinite(x)?x:null};
     const patch={amount:num($("#f_amt").value),due_date:$("#f_due").value||null,double_date:$("#f_dbl").value||$("#f_due").value||null,
       ticket_no:$("#f_no").value.trim()||null,issuer_id:Number($("#f_issuer").value)||null,pay_link:$("#f_link").value.trim()||null,
-      notes:$("#f_notes").value.trim()||null,status:$("#f_status")?.value||ed.status};
-    if(patch.status!=="paid")patch.closed_at=null;else if(ed.status!=="paid")patch.closed_at=new Date().toISOString();
+      notes:$("#f_notes").value.trim()||null,status:$("#f_status")?.value||ed.status,
+      client_handling:!!$("#f_client")?.checked,...($("#f_newdl")?{new_deadline:$("#f_newdl").value||null}:{})};
+    if(!ARCHIVE.includes(patch.status))patch.closed_at=null;else if(!ARCHIVE.includes(ed.status))patch.closed_at=new Date().toISOString();
     const {error}=await sb.from("tickets").update(patch).eq("id",ed.id);
     if(error)return toast("השמירה נכשלה: "+errText(error));
     toast("הדוח עודכן");state.editing=null;await refresh();go("all");return}
@@ -635,12 +745,13 @@ document.addEventListener("submit",async e=>{
       offense_at:off?`${off}T${time||"00:00"}:00`:null,offense_place:$("#f_place").value.trim()||null,
       notice_date:$("#f_notice").value||null,amount:num($("#f_amt").value),amount_after:num($("#f_after").value),
       due_date:$("#f_due").value||null,double_date:$("#f_dbl").value||$("#f_due").value||null,
-      pay_link:$("#f_link").value.trim()||null,notes:$("#f_notes").value.trim()||null};
+      pay_link:$("#f_link").value.trim()||null,notes:$("#f_notes").value.trim()||null,
+      ...($("#f_client")?{client_handling:$("#f_client").checked}:{}),...($("#f_newdl")?{new_deadline:$("#f_newdl").value||null}:{})};
     const id=$("#f_id").value;let error;
     const wasReview=!!(id&&state.editing&&state.editing.reviewNeeded);
     if(wasReview){if(!data.issuer_id)return toast("צריך לבחור גורם מוציא");data.review_needed=false;data.review_reason=null;data.status=m.before?"ours":"open"}
     else if(id&&$("#f_status")){data.status=$("#f_status").value;
-      if(data.status!=="paid")data.closed_at=null;else if(ed&&ed.status!=="paid")data.closed_at=new Date().toISOString()}
+      if(!ARCHIVE.includes(data.status))data.closed_at=null;else if(ed&&!ARCHIVE.includes(ed.status))data.closed_at=new Date().toISOString()}
     if(id)({error}=await sb.from("tickets").update(data).eq("id",id));
     else({error}=await sb.from("tickets").insert({...data,status:m.before?"ours":"open",created_by:state.user.id}));
     if(error)throw error;
@@ -652,7 +763,7 @@ document.addEventListener("submit",async e=>{
 // ---- export (CSV to clipboard, opens in Google Sheets)
 $("#exportBtn").onclick=async()=>{
   const cols=[["plate","מספר רכב"],["dealer","נמכר ל"],["saleDate","תאריך מכירה"],["issuer","גורם"],["ticketNo","מספר דוח"],["offenseDate","תאריך עבירה"],["receivedDate","התקבל"],["amount","סכום"],["dueDate","לתשלום עד"],["doubleDate","מועד כפל"],["status","סטטוס"],["notes","הערות"]];
-  const ST={open:"פתוח",paid:"שולם",dispute:"מחלוקת",ours:"של המגרש"};
+  const ST={open:"פתוח",paid:"שולם",dispute:"מחלוקת",ours:"של המגרש",...OTHER_STATUS};
   const q=v=>`"${String(v??"").replace(/"/g,'""')}"`;
   const csv="﻿"+[cols.map(c=>q(c[1])).join(","),...state.tickets.map(t=>cols.map(([k])=>q(k==="status"?ST[t.status]||t.status:t[k])).join(","))].join("\n");
   try{await navigator.clipboard.writeText(csv);toast("הועתק. הדביקו ב־Google Sheets")}catch(err){toast("ההעתקה לא הצליחה")}
